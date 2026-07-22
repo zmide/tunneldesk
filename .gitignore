@@ -1,0 +1,11 @@
+data/
+__pycache__/
+*.pyc
+.ssh/
+.tunneldesk-storage.json
+node_modules/
+npm-debug.log*
+dist/
+release/
+release-notes.md
+docs/

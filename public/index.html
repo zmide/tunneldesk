@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TunnelDesk</title>
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css?v=1.1.0">
+  <link rel="stylesheet" href="/app.css?v=1.1.0">
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+  <div id="modal" class="modal" hidden></div>
+  <div class="app">
+    <div class="left-pane">
+      <div class="brand">
+        <h1>TunnelDesk</h1>
+        <div class="side-actions"><button id="themeToggle" class="icon-button" onclick="toggleTheme()" title="切换主题" aria-label="切换主题"><i data-lucide="moon"></i></button><button class="icon-button" onclick="loadAll()" title="刷新数据" aria-label="刷新数据"><i data-lucide="refresh-cw"></i></button></div>
+      </div>
+      <div class="left-body">
+        <nav class="activity" aria-label="主导航">
+          <div class="activity-top">
+            <button id="navConnections" class="active" onclick="showPrimary('connections')" title="连接列表" aria-label="连接列表"><i data-lucide="server"></i></button>
+            <button id="navRunning" onclick="showPrimary('running')" title="正在转发" aria-label="正在转发"><i data-lucide="route"></i></button>
+            <button id="navCommand" onclick="showPrimary('command')" title="批量命令" aria-label="批量命令"><i data-lucide="square-terminal"></i></button>
+            <button id="navImport" onclick="showPrimary('import')" title="导入导出" aria-label="导入导出"><i data-lucide="arrow-left-right"></i></button>
+            <button id="navLogs" onclick="showPrimary('logs')" title="日志" aria-label="日志"><i data-lucide="scroll-text"></i></button>
+            <button id="navSettings" onclick="showPrimary('settings')" title="设置" aria-label="设置"><i data-lucide="settings"></i><span id="navSettingsUpdateDot" class="nav-update-dot" hidden aria-label="发现新版本"></span></button>
+          </div>
+          <div class="activity-bottom">
+            <a class="github-link" href="https://github.com/zmide/tunneldesk" target="_blank" rel="noopener" title="GitHub">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.2.8-.6v-2c-3.3.7-4-1.4-4-1.4-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 .1.6 2.1 3.4 1.5.1-.7.4-1.2.7-1.5-2.6-.3-5.4-1.3-5.4-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.4 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+            </a>
+          </div>
+        </nav>
+        <aside id="sidebar" class="sidebar">
+          <div class="side-nav">
+            <button id="sideConnections" class="active" onclick="showPrimary('connections')">连接列表</button>
+            <button id="sideImport" onclick="showPrimary('import')">导入导出</button>
+          </div>
+          <div id="explorerTools" class="explorer-tools">
+            <button onclick="addGroup()">添加分组</button>
+            <button class="primary" onclick="newConnection()">添加 SSH</button>
+            <button onclick="startAllForwards()">启动全部转发</button>
+            <button onclick="stopAllForwardsUi()">停止全部转发</button>
+          </div>
+          <div id="connectionGroups" class="tree"></div>
+        </aside>
+      </div>
+    </div>
+
+    <main id="content" class="content">
+      <div class="topbar">
+        <div>
+          <button id="mobileBack" class="mobile-back" onclick="backToExplorer()">返回</button>
+          <strong id="workspaceTitle">工作区</strong>
+          <div id="workspaceSubtitle" class="cmd">选择左侧 SSH 后开始操作</div>
+        </div>
+        <div id="notice" class="notice"></div>
+      </div>
+      <div id="tabs" class="tabs"></div>
+      <div class="workspace">
+        <section id="view-welcome" class="view"></section>
+        <section id="view-terminal" class="view" hidden></section>
+        <section id="view-forwards" class="view" hidden></section>
+        <section id="view-edit" class="view" hidden></section>
+        <section id="view-import" class="view" hidden></section>
+        <section id="view-log" class="view" hidden></section>
+        <section id="view-command" class="view" hidden></section>
+        <section id="view-sftp" class="view" hidden></section>
+        <section id="view-settings" class="view" hidden></section>
+        <section id="view-dashboard" class="view" hidden></section>
+      </div>
+    </main>
+  </div>
+
+  <nav class="mobile-tabs">
+    <button id="mobileConnections" class="active" onclick="showPrimary('connections')" title="连接列表" aria-label="连接列表"><i data-lucide="server"></i><span class="mobile-tab-label">连接</span></button>
+    <button id="mobileRunning" onclick="showPrimary('running')" title="正在转发" aria-label="正在转发"><i data-lucide="route"></i><span class="mobile-tab-label">转发</span></button>
+    <button id="mobileCommand" onclick="showPrimary('command')" title="批量命令" aria-label="批量命令"><i data-lucide="square-terminal"></i><span class="mobile-tab-label">批量</span></button>
+    <button id="mobileImport" onclick="showPrimary('import')" title="导入导出" aria-label="导入导出"><i data-lucide="arrow-left-right"></i><span class="mobile-tab-label">导入</span></button>
+    <button id="mobileLogs" onclick="showPrimary('logs')" title="日志" aria-label="日志"><i data-lucide="scroll-text"></i><span class="mobile-tab-label">日志</span></button>
+    <button id="mobileSettings" onclick="showPrimary('settings')" title="设置" aria-label="设置"><i data-lucide="settings"></i><span class="mobile-tab-label">设置</span><span id="mobileSettingsUpdateDot" class="nav-update-dot" hidden aria-label="发现新版本"></span></button>
+    <a class="mobile-github-link" href="https://github.com/zmide/tunneldesk" target="_blank" rel="noopener" title="GitHub" aria-label="GitHub">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.2.8-.6v-2c-3.3.7-4-1.4-4-1.4-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 .1.6 2.1 3.4 1.5.1-.7.4-1.2.7-1.5-2.6-.3-5.4-1.3-5.4-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.4 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+    </a>
+  </nav>
+
+<template id="connectionFormTpl">
+  <div class="panel">
+    <form id="connectionForm">
+      <input type="hidden" id="conn_id">
+      <div class="grid">
+        <div><label>名称</label><input id="conn_name" required placeholder="server-a"></div>
+        <div><label>分组</label><select id="conn_group"></select></div>
+      </div>
+      <div class="grid">
+        <div><label>SSH 用户</label><input id="conn_user" required placeholder="root"></div>
+        <div><label>SSH 主机</label><input id="conn_host" required placeholder="example.com"></div>
+      </div>
+      <div class="grid">
+        <div><label>SSH 端口</label><input id="conn_port" type="number" min="1" max="65535" value="22"></div>
+        <div><label>启动 TunnelDesk 时自动启用转发</label><select id="conn_autostart"><option value="0">否</option><option value="1">是</option></select></div>
+      </div>
+      <label>标签</label><input id="conn_tags" placeholder="例如：生产 数据库 海外">
+      <div class="auth-switch">
+        <label>登录方式</label>
+        <select id="conn_auth_type" onchange="toggleAuthFields()"><option value="key">私钥登录</option><option value="password">密码登录</option></select>
+      </div>
+      <div id="keyAuthBox" class="grid">
+        <div>
+          <label>私钥</label>
+          <div class="key-picker"><select id="conn_key" onchange="renderKeyStatus()"><option value="">不使用私钥</option></select><button type="button" onclick="loadKeys()">刷新</button></div>
+          <div id="keyStatus" class="key-status muted">未选择私钥</div>
+          <div class="upload-line"><label class="file-picker"><input id="key_upload" type="file" accept="*/*" onchange="updateFilePicker(this)"><span class="file-picker-button">选择文件</span><span class="file-picker-name">未选择文件</span></label><button type="button" onclick="uploadKey()">上传到当前密钥目录</button></div>
+          <div class="actions"><button type="button" onclick="renderKeyStatus()">检查权限</button><button type="button" onclick="repairSelectedKey()">一键修复权限</button></div>
+        </div>
+      </div>
+      <div id="passwordAuthBox" class="auth-password" hidden>
+        <label>SSH 密码</label><input id="conn_password" type="password" autocomplete="new-password" placeholder="输入 SSH 登录密码">
+        <div class="muted">编辑已有密码连接时留空表示保持原密码。</div>
+      </div>
+      <label>额外 SSH 参数</label><textarea id="conn_extra">-o StrictHostKeyChecking=accept-new
+-o ServerAliveInterval=60
+-o ServerAliveCountMax=3
+-o TCPKeepAlive=yes</textarea>
+      <div class="actions">
+        <button class="primary" type="submit">保存连接</button>
+        <button type="button" onclick="testConnectionForm()">测试 SSH</button>
+        <button type="button" onclick="resetConnectionForm()">清空</button>
+      </div>
+    </form>
+  </div>
+</template>
+
+<template id="forwardManagerTpl">
+  <div class="panel">
+    <form id="forwardForm">
+      <input type="hidden" id="forward_conn_id">
+      <div class="grid">
+        <div><label>转发类型</label><select id="forward_mode" onchange="toggleForwardLabels()"><option value="local">本地转发 -L</option><option value="remote">远程转发 -R</option><option value="socks">SOCKS5 -D</option></select></div>
+        <div><label id="forward_bind_label">本地监听地址</label><input id="forward_bind_host" value="127.0.0.1"></div>
+      </div>
+      <div class="grid3">
+        <div><label id="forward_bind_port_label">本地监听端口</label><input id="forward_bind_port" type="number" min="1" max="65535"></div>
+        <div id="targetHostBox"><label>目标主机</label><input id="forward_target_host" value="127.0.0.1"></div>
+        <div id="targetPortBox"><label>目标端口</label><input id="forward_target_port" type="number" min="1" max="65535"></div>
+      </div>
+      <div class="grid3">
+        <div><label>服务名称</label><input id="forward_service_name" placeholder="例如：后台面板"></div>
+        <div><label>服务类型</label><select id="forward_service_type"><option value="">自动</option><option value="web">Web</option><option value="mysql">MySQL</option><option value="redis">Redis</option><option value="ssh">SSH</option><option value="socks">SOCKS5</option><option value="other">其他</option></select></div>
+        <div><label>备注</label><input id="forward_service_note" placeholder="可选"></div>
+      </div>
+      <div class="grid">
+        <div><label>访问协议</label><select id="forward_url_scheme"><option value="">自动</option><option value="http">http</option><option value="https">https</option></select></div>
+        <div><label>转发模板</label><select id="forward_template_select" onchange="applyForwardTemplate(this.value)"><option value="">选择模板</option></select></div>
+      </div>
+      <div class="actions"><button class="primary" id="forwardSubmitBtn" type="submit">添加转发</button><button type="button" onclick="saveForwardTemplate()">保存为模板</button><button type="button" onclick="showForwardTemplateManager()">管理模板</button><button type="button" onclick="recommendForwardPort()">推荐端口</button><button type="button" id="cancelForwardEditBtn" onclick="cancelForwardEdit()" hidden>取消编辑</button><button type="button" id="bulkDeleteForwardsBtn" class="danger" onclick="bulkDeleteForwards()" hidden>删除选中转发</button></div>
+    </form>
+    <div id="forwardTemplateManager" class="template-list" hidden></div>
+  </div>
+  <div class="panel">
+    <h3>转发列表</h3>
+    <div id="forwardList" class="muted">暂无</div>
+  </div>
+</template>
+
+<template id="importTpl">
+  <div class="panel" id="importMainPanel">
+    <div class="workspace-head">
+      <div>
+        <h2>导入导出</h2>
+        <div class="subtitle">迁移 SSH config、数据库备份和连接配置快照。</div>
+      </div>
+    </div>
+    <div class="grid import-main-grid">
+      <section id="import-source" class="import-section">
+        <h3><i data-lucide="file-input"></i>SSH config 导入导出</h3>
+        <label>上传配置文件</label>
+        <div class="upload-line"><label class="file-picker"><input id="config_upload" type="file" accept="*/*" onchange="updateFilePicker(this)"><span class="file-picker-button">选择文件</span><span class="file-picker-name">未选择文件</span></label><button onclick="parseImportConfig()">上传解析</button></div>
+        <label>或粘贴 config 内容</label><textarea id="config_text" placeholder="Host demo&#10;  HostName example.com&#10;  User root&#10;  LocalForward 6010 127.0.0.1:6868"></textarea>
+        <div class="actions"><button onclick="parseImportText()">粘贴解析</button></div>
+        <div id="import-results" class="import-results-block">
+          <div class="import-results-head"><h3><i data-lucide="list-checks"></i>导入结果</h3><div class="actions"><button id="bindImportKeysBtn" onclick="bindImportIdentities()" hidden>绑定私钥</button><button id="batchTestBtn" onclick="batchTestImport()">批量测试</button><button id="batchSaveBtn" class="primary" onclick="batchSaveImport()">批量保存</button></div></div>
+          <div id="importResults"></div>
+        </div>
+        <div class="import-export-config">
+          <h3><i data-lucide="file-output"></i>导出 SSH config</h3>
+          <textarea id="export_text" readonly></textarea>
+          <div class="actions"><button onclick="exportConfig()">生成导出内容</button><button onclick="copyExport()">复制</button></div>
+        </div>
+      </section>
+      <section id="import-export" class="import-section">
+        <h3><i data-lucide="database-backup"></i>数据库导入导出</h3>
+        <div class="actions"><button onclick="downloadDatabaseBackup()">下载数据库备份</button><button id="backupBundleBtn" onclick="downloadBackupBundle()" hidden>下载加密迁移包</button></div>
+        <label>恢复数据库 / 加密迁移包</label>
+        <div class="upload-line"><label class="file-picker"><input id="db_restore_upload" type="file" accept=".db,.json,.tdbackup.json,application/json,application/octet-stream,*/*" onchange="updateFilePicker(this)"><span class="file-picker-button">选择文件</span><span class="file-picker-name">未选择文件</span></label><button class="danger" onclick="restoreDatabaseBackup()">上传恢复</button></div>
+        <div id="backupBundleNote" class="muted">普通备份使用 .db 文件；启用配置加密后会显示 .tdbackup.json 加密迁移包下载入口。</div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<script src="/vendor/lucide/lucide.min.js?v=1.1.0"></script>
+<script src="/app-api.js?v=1.1.0"></script>
+<script src="/app-utils.js?v=1.1.0"></script>
+<script src="/app-workspace.js?v=1.1.0"></script>
+<script src="/app-settings.js?v=1.1.0"></script>
+<script src="/app-running.js?v=1.1.0"></script>
+<script src="/app-batch.js?v=1.1.0"></script>
+<script src="/app-logs.js?v=1.1.0"></script>
+<script src="/app-connections.js?v=1.1.0"></script>
+<script src="/app-terminal.js?v=1.1.0"></script>
+<script src="/app-forwards.js?v=1.1.0"></script>
+<script src="/app-import.js?v=1.1.0"></script>
+<script src="/app-sftp.js?v=1.1.0"></script>
+<script src="/app.js?v=1.1.0"></script>
+</body>
+</html>

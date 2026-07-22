@@ -1,0 +1,100 @@
+{
+  "name": "tunneldesk",
+  "version": "1.1.0",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "description": "SSH connection and port forwarding web console",
+  "author": "zmide <zmide@users.noreply.github.com>",
+  "homepage": "https://github.com/zmide/tunneldesk",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zmide/tunneldesk.git"
+  },
+  "main": "desktop/main.js",
+  "scripts": {
+    "build": "tsc",
+    "desktop": "npm run build && electron .",
+    "desktop:run": "electron .",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "start": "node dist/server.js",
+    "check": "tsc --noEmit",
+    "regression": "npm run build && node scripts/check-frontend.js && node scripts/terminal-pty-check.js && node scripts/desktop-startup-check.js && node scripts/sftp-pagination-check.js && node scripts/update-checker-check.js && node scripts/runtime-settings-check.js && node scripts/regression-check.js",
+    "ui:smoke": "electron scripts/ui-smoke-electron.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide": "^1.24.0",
+    "socksv5": "^0.0.6",
+    "ssh2": "^1.17.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "build": {
+    "appId": "com.zmide.tunneldesk",
+    "productName": "TunnelDesk",
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "dist/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      "LICENSE"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "afterPack": "scripts/after-pack.js",
+    "win": {
+      "icon": "desktop/assets/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-windows-${arch}-installer.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-windows-${arch}-portable.${ext}"
+    },
+    "linux": {
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+      "icon": "desktop/assets/icon.png",
+      "maintainer": "zmide <zmide@users.noreply.github.com>",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ]
+    },
+    "mac": {
+      "artifactName": "${productName}-${version}-macos-${arch}.${ext}",
+      "icon": "desktop/assets/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}

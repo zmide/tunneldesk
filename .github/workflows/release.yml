@@ -1,0 +1,237 @@
+﻿name: Build Releases
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows packages
+        run: npm run dist -- --win nsis portable --x64 --publish never
+
+      - name: Verify Windows artifact names
+        run: node scripts/release-artifacts-check.js windows
+
+      - name: Create release notes
+        run: node scripts/release-notes.js
+
+
+      - name: Upload Windows artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: release-notes.md
+
+          files: |
+            release/*.exe
+            release/*.blockmap
+
+      - name: Upload Windows workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TunnelDesk-windows-x64
+          path: |
+            release/*.exe
+            release/*.blockmap
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux packages
+        run: npm run dist -- --linux AppImage deb rpm --x64 --publish never
+
+      - name: Verify Linux artifact names
+        run: node scripts/release-artifacts-check.js linux
+
+      - name: Create release notes
+        run: node scripts/release-notes.js
+
+
+      - name: Upload Linux artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: release-notes.md
+
+          files: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.blockmap
+
+      - name: Upload Linux workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TunnelDesk-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.blockmap
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build macOS packages
+        run: npm run dist -- --mac dmg zip --x64 --arm64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Verify macOS artifact names
+        run: node scripts/release-artifacts-check.js macos
+
+      - name: Verify packaged PTY helper
+        shell: bash
+        run: |
+          find release -path '*/Contents/Resources/app.asar.unpacked/node_modules/node-pty/*' -type f -name spawn-helper -print > /tmp/tunneldesk-pty-helpers.txt
+          test -s /tmp/tunneldesk-pty-helpers.txt
+          while IFS= read -r helper; do
+            test -x "$helper"
+          done < /tmp/tunneldesk-pty-helpers.txt
+      - name: Verify packaged macOS icon
+        shell: bash
+        run: |
+          app_count=0
+          while IFS= read -r plist; do
+            app_count=$((app_count + 1))
+            icon_file="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")"
+            test "$icon_file" = "icon.icns"
+            icon_path="$(dirname "$plist")/Resources/$icon_file"
+            test -s "$icon_path"
+            iconset_dir="$(mktemp -d)/TunnelDesk.iconset"
+            /usr/bin/iconutil -c iconset "$icon_path" -o "$iconset_dir"
+            test -s "$iconset_dir/icon_512x512@2x.png"
+          done < <(find release -path '*/TunnelDesk.app/Contents/Info.plist' -type f -print)
+          test "$app_count" -eq 2
+      - name: Create release notes
+        run: node scripts/release-notes.js
+
+
+      - name: Upload macOS artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: release-notes.md
+
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+
+      - name: Upload macOS workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TunnelDesk-macos-x64-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+
+  linux-source:
+    name: Linux Source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Create Linux/source tarball
+        shell: bash
+        run: |
+          VERSION="$(node -p 'require("./package.json").version')"
+          mkdir -p release-source
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='release' \
+            --exclude='release-source' \
+            --exclude='data' \
+            --exclude='.ssh' \
+            --transform='s,^\./,tunneldesk/,' \
+            --transform='s,^\.$,tunneldesk,' \
+            -czf "release-source/TunnelDesk-${VERSION}-linux-source-noarch.tar.gz" .
+
+      - name: Verify Linux/source artifact name
+        shell: bash
+        run: node scripts/release-artifacts-check.js linux-source release-source
+
+      - name: Create release notes
+        run: node scripts/release-notes.js
+
+
+      - name: Upload Linux/source artifact
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: release-notes.md
+
+          files: release-source/*.tar.gz
+
+      - name: Upload Linux/source workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TunnelDesk-linux-source-noarch
+          path: release-source/*.tar.gz

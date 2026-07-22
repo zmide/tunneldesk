@@ -347,10 +347,11 @@ app.whenReady().then(async () => {
   })()`);
   const restoreKeyUi = await window.webContents.executeJavaScript(`(async () => {
     const originalLoadIdentityBindingOptions = loadIdentityBindingOptions;
+    const windowsIdentityPath = ['C:','Users','junruo','.ssh','id_rsa_junruo'].join('\\\\');
     loadIdentityBindingOptions = async () => ({
       items:[
-        {name:'id_rsa_junruo',path:'/project/.ssh/id_rsa_junruo',source_label:'当前密钥目录'},
-        {name:'id_rsa_user',path:'/home/user/.ssh/id_rsa_user',source_label:'用户 ~/.ssh'}
+        {name:'id_rsa_junruo',path:windowsIdentityPath,source_label:'用户 ~/.ssh'},
+        {name:'id_rsa_project',path:'/project/.ssh/id_rsa_project',source_label:'当前密钥目录'}
       ],
       upload_directory:'/project/.ssh'
     });
@@ -370,6 +371,12 @@ app.whenReady().then(async () => {
     const card = modal?.querySelector('.restore-key-modal');
     const rows = [...modal.querySelectorAll('.identity-binding-row')];
     const candidates = [...modal.querySelectorAll('#identityBindingCandidate option')].map(item => item.textContent.trim());
+    const candidate = modal.querySelector('#identityBindingCandidate');
+    candidate.value = windowsIdentityPath;
+    const candidateValuePreserved = candidate.value === windowsIdentityPath;
+    modal.querySelector('#identityBindingRows input').checked = true;
+    modal.querySelector('#identityBindingStage').click();
+    const stagesWindowsPath = modal.querySelector('[data-binding-result="0"]')?.textContent.includes('已暂存：id_rsa_junruo');
     const input = modal?.querySelector('#identityBindingUpload');
     const status = modal?.querySelector('#restoreKeyStatus');
     const cardRect = card?.getBoundingClientRect();
@@ -378,15 +385,32 @@ app.whenReady().then(async () => {
       rowCount:rows.length,
       originalNames:[...new Set(rows.map(row => row.querySelector('code')?.textContent.trim()))],
       candidates,
+      candidateValuePreserved,
+      stagesWindowsPath,
       acceptsAll:input?.getAttribute('accept') === '*/*',
       uploadDirectory:modal.querySelector('#identityBindingDirectory')?.textContent.includes('/project/.ssh'),
       actions:['identityBindingTest','identityBindingStage','identityBindingFinish'].every(id => Boolean(modal.querySelector('#'+id))),
       statusReady:Boolean(status?.textContent),
       cardWithinViewport:Boolean(cardRect && cardRect.left >= -0.5 && cardRect.right <= innerWidth + 0.5 && cardRect.top >= -0.5 && cardRect.bottom <= innerHeight + 0.5)
     };
-    modal.querySelector('#restoreKeyCancel')?.click();
-    result.cancelled = await pending === null;
-    result.closed = modal.hidden && !modal.querySelector('.restore-key-modal');
+    modal.querySelector('#identityBindingFinish')?.click();
+    const completedBindings = await pending;
+    result.continuedWithUnbound = Array.isArray(completedBindings) && completedBindings.length === 1 && completedBindings[0].identity_path === windowsIdentityPath;
+    const skipPending = showIdentityBindingModal(items, {subtitle:'UI smoke skip'});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    document.querySelector('#identityBindingFinish')?.click();
+    const skippedBindings = await skipPending;
+    result.continuedAllUnbound = Array.isArray(skippedBindings) && skippedBindings.length === 0;
+    const previousImportState = importState;
+    importState = {tunnels:[{name:'unbound',missing_identity:true}],missing_keys:['id_rsa_old']};
+    try {
+      importReady();
+      result.configAllowsUnbound = true;
+    } catch {
+      result.configAllowsUnbound = false;
+    }
+    importState = previousImportState;
+    result.closed = document.querySelector('#modal').hidden && !document.querySelector('#modal .restore-key-modal');
     loadIdentityBindingOptions = originalLoadIdentityBindingOptions;
     return result;
   })()`);
@@ -823,7 +847,7 @@ app.whenReady().then(async () => {
   const runningActionsFailed = runningActions.found && (Math.abs(runningActions.open.width - runningActions.retry.width) > 1 || Math.abs(runningActions.open.height - runningActions.retry.height) > 1);
   const authUiFailed = !authUi.found || !Object.values(authUi.passwordMode).every(Boolean) || !Object.values(authUi.keyMode).every(Boolean);
   const notificationUiFailed = notificationUi.replayed !== 0 || !notificationUi.initialized || notificationUi.cursor !== notificationUi.stored;
-  const restoreKeyUiFailed = !restoreKeyUi.opened || restoreKeyUi.rowCount !== 12 || JSON.stringify(restoreKeyUi.originalNames) !== JSON.stringify(['old-key-a','old-key-b']) || restoreKeyUi.candidates.length !== 3 || !restoreKeyUi.candidates.some(item=>item.includes('当前密钥目录')) || !restoreKeyUi.candidates.some(item=>item.includes('用户 ~/.ssh')) || !restoreKeyUi.acceptsAll || !restoreKeyUi.uploadDirectory || !restoreKeyUi.actions || !restoreKeyUi.statusReady || !restoreKeyUi.cardWithinViewport || !restoreKeyUi.cancelled || !restoreKeyUi.closed;
+  const restoreKeyUiFailed = !restoreKeyUi.opened || restoreKeyUi.rowCount !== 12 || JSON.stringify(restoreKeyUi.originalNames) !== JSON.stringify(['old-key-a','old-key-b']) || restoreKeyUi.candidates.length !== 3 || !restoreKeyUi.candidates.some(item=>item.includes('当前密钥目录')) || !restoreKeyUi.candidates.some(item=>item.includes('用户 ~/.ssh')) || !restoreKeyUi.candidateValuePreserved || !restoreKeyUi.stagesWindowsPath || !restoreKeyUi.continuedWithUnbound || !restoreKeyUi.continuedAllUnbound || !restoreKeyUi.configAllowsUnbound || !restoreKeyUi.acceptsAll || !restoreKeyUi.uploadDirectory || !restoreKeyUi.actions || !restoreKeyUi.statusReady || !restoreKeyUi.cardWithinViewport || !restoreKeyUi.closed;
   const settingsSectionsFailed = navigationUi.settingsChecks.some(item=>item.visible.length!==1||item.visible[0]!==item.requested||item.active.length!==1||item.active[0]!==item.requested) || navigationUi.aboutVisible?.length!==1 || navigationUi.aboutVisible?.[0]!=='settings-about' || navigationUi.aboutActive?.length!==1 || navigationUi.aboutActive?.[0]!=='settings-about';
   const importSectionsFailed = navigationUi.importChecks.some(item=>item.visible.length!==1||item.visible[0]!==item.requested||item.active.length!==1||item.active[0]!==item.requested);
   const importSourceCheck = navigationUi.importChecks.find(item => item.requested === 'import-source');

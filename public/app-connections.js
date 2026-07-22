@@ -171,7 +171,6 @@ async function openConnectionBulkSettings() {
   const count = selectedConnectionIds.size;
   if (!count) return notify("请选择 SSH 连接", "info");
   const info = await api("/api/identity-files/info");
-  const keyOptions = (info.items || []).map(item => `<option value="${escAttr(item.path)}">${esc(item.label)}${item.source_label ? ` · ${esc(item.source_label)}` : ""}</option>`).join("");
   const groups = groupNames().map(name => `<option value="${escAttr(name)}"></option>`).join("");
   $("modal").hidden = false;
   $("modal").innerHTML = `<div class="modal-card wide connection-bulk-modal">
@@ -182,10 +181,14 @@ async function openConnectionBulkSettings() {
     <div class="bulk-setting-row credentials"><label class="checkline"><input id="bulkSetAuth" type="checkbox" onchange="toggleConnectionBulkField('Auth',this.checked)">修改登录凭据</label><div id="bulkAuthFields">
       <select id="bulkAuthType" disabled onchange="toggleConnectionBulkAuthType()"><option value="password">密码</option><option value="key">私钥</option></select>
       <input id="bulkPassword" type="password" autocomplete="new-password" placeholder="输入新 SSH 密码" disabled>
-      <select id="bulkIdentity" disabled hidden><option value="">选择私钥</option>${keyOptions}</select>
+      <select id="bulkIdentity" disabled hidden><option value="">选择私钥</option></select>
     </div></div>
     <div class="actions"><button onclick="closeModal()">取消</button><button class="primary" onclick="applyConnectionBulkSettings()">应用设置</button></div>
   </div>`;
+  $("bulkIdentity").replaceChildren(
+    new Option("选择私钥", ""),
+    ...(info.items || []).map(item => new Option(`${item.label}${item.source_label ? ` · ${item.source_label}` : ""}`, String(item.path || "")))
+  );
   refreshIcons();
 }
 

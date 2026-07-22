@@ -33,6 +33,10 @@ function disableEncryption() {
   return { ok: true };
 }
 
+function lockEncryption() {
+  activeKey = null;
+}
+
 function encryptionReady() {
   const settings = readSecuritySettings();
   return !settings.encryption_enabled || Boolean(activeKey);
@@ -66,5 +70,6 @@ module.exports = {
   enableEncryption,
   encryptionReady,
   encryptText,
+  lockEncryption,
   unlockEncryption
 };

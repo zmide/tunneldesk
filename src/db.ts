@@ -7,11 +7,15 @@ const { decryptText, encryptText } = require("./crypto-store");
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(LOG_DIR, { recursive: true });
 
-const db = new DatabaseSync(DB_PATH);
-db.exec("PRAGMA journal_mode=WAL");
-db.exec("PRAGMA foreign_keys=ON");
+let db: any = null;
 
-db.exec(`
+function openDatabase() {
+  if (db) return db;
+  db = new DatabaseSync(DB_PATH);
+  db.exec("PRAGMA journal_mode=WAL");
+  db.exec("PRAGMA foreign_keys=ON");
+
+  db.exec(`
 CREATE TABLE IF NOT EXISTS tunnels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -89,25 +93,29 @@ CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-`);
+  `);
 
-const connectionColumns = new Set(all("PRAGMA table_info(connections)").map((row) => row.name));
-if (!connectionColumns.has("autostart_forwards")) {
-  run("ALTER TABLE connections ADD COLUMN autostart_forwards INTEGER NOT NULL DEFAULT 0");
+  const connectionColumns = new Set(all("PRAGMA table_info(connections)").map((row) => row.name));
+  if (!connectionColumns.has("autostart_forwards")) {
+    run("ALTER TABLE connections ADD COLUMN autostart_forwards INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!connectionColumns.has("tags")) run("ALTER TABLE connections ADD COLUMN tags TEXT");
+  if (!connectionColumns.has("auth_type")) run("ALTER TABLE connections ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'key'");
+  if (!connectionColumns.has("ssh_password")) run("ALTER TABLE connections ADD COLUMN ssh_password TEXT");
+  run("UPDATE connection_forwards SET status='stopped' WHERE pid IS NULL AND status='running'");
+  const forwardColumns = new Set(all("PRAGMA table_info(connection_forwards)").map((row) => row.name));
+  if (!forwardColumns.has("service_name")) run("ALTER TABLE connection_forwards ADD COLUMN service_name TEXT");
+  if (!forwardColumns.has("service_type")) run("ALTER TABLE connection_forwards ADD COLUMN service_type TEXT");
+  if (!forwardColumns.has("service_note")) run("ALTER TABLE connection_forwards ADD COLUMN service_note TEXT");
+  if (!forwardColumns.has("restore")) run("ALTER TABLE connection_forwards ADD COLUMN restore INTEGER NOT NULL DEFAULT 0");
+  if (!forwardColumns.has("reconnect_count")) run("ALTER TABLE connection_forwards ADD COLUMN reconnect_count INTEGER NOT NULL DEFAULT 0");
+  if (!forwardColumns.has("last_error")) run("ALTER TABLE connection_forwards ADD COLUMN last_error TEXT");
+  if (!forwardColumns.has("started_at")) run("ALTER TABLE connection_forwards ADD COLUMN started_at INTEGER");
+  if (!forwardColumns.has("url_scheme")) run("ALTER TABLE connection_forwards ADD COLUMN url_scheme TEXT");
+  return db;
 }
-if (!connectionColumns.has("tags")) run("ALTER TABLE connections ADD COLUMN tags TEXT");
-if (!connectionColumns.has("auth_type")) run("ALTER TABLE connections ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'key'");
-if (!connectionColumns.has("ssh_password")) run("ALTER TABLE connections ADD COLUMN ssh_password TEXT");
-run("UPDATE connection_forwards SET status='stopped' WHERE pid IS NULL AND status='running'");
-const forwardColumns = new Set(all("PRAGMA table_info(connection_forwards)").map((row) => row.name));
-if (!forwardColumns.has("service_name")) run("ALTER TABLE connection_forwards ADD COLUMN service_name TEXT");
-if (!forwardColumns.has("service_type")) run("ALTER TABLE connection_forwards ADD COLUMN service_type TEXT");
-if (!forwardColumns.has("service_note")) run("ALTER TABLE connection_forwards ADD COLUMN service_note TEXT");
-if (!forwardColumns.has("restore")) run("ALTER TABLE connection_forwards ADD COLUMN restore INTEGER NOT NULL DEFAULT 0");
-if (!forwardColumns.has("reconnect_count")) run("ALTER TABLE connection_forwards ADD COLUMN reconnect_count INTEGER NOT NULL DEFAULT 0");
-if (!forwardColumns.has("last_error")) run("ALTER TABLE connection_forwards ADD COLUMN last_error TEXT");
-if (!forwardColumns.has("started_at")) run("ALTER TABLE connection_forwards ADD COLUMN started_at INTEGER");
-if (!forwardColumns.has("url_scheme")) run("ALTER TABLE connection_forwards ADD COLUMN url_scheme TEXT");
+
+openDatabase();
 
 function now() {
   return Math.floor(Date.now() / 1000);
@@ -465,11 +473,20 @@ function restoreConfigSnapshot(snapshot) {
 ensureBuiltinForwardTemplates();
 
 function closeDatabase() {
+  if (!db) return;
   db.close();
+  db = null;
+}
+
+function reopenDatabase() {
+  closeDatabase();
+  openDatabase();
+  ensureBuiltinForwardTemplates();
+  return db;
 }
 
 module.exports = {
-  db,
+  get db() { return db; },
   now,
   run,
   get,
@@ -499,5 +516,6 @@ module.exports = {
   exportConfigSnapshot,
   restoreConfigSnapshot,
   ensureBuiltinForwardTemplates,
-  closeDatabase
+  closeDatabase,
+  reopenDatabase
 };

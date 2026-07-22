@@ -43,7 +43,8 @@ const {
   encryptStoredConnectionSecrets,
   decryptStoredConnectionSecrets,
   run,
-  closeDatabase
+  closeDatabase,
+  reopenDatabase
 } = require("./db");
 const {
   listIdentityFiles,
@@ -80,7 +81,7 @@ const { cancelSftpJob, clearFinishedSftpJobs, compressJob, copyJob, deleteSftpJo
 const { appendSystemLog, deleteLogs, listLogs, readLog, readRawLog } = require("./logs");
 const { listNotifications, notifyEvent } = require("./notifications");
 const { authRequired, isAuthenticated, isLocalRequest, login, logout, publicSecuritySettings, readSecuritySettings, resetWebAccessSecurity, sameOrigin, secureHeaders, setPassword, setToken, updateSecurityOptions, writeSecuritySettings } = require("./security");
-const { disableEncryption, enableEncryption, unlockEncryption } = require("./crypto-store");
+const { disableEncryption, enableEncryption, lockEncryption, unlockEncryption } = require("./crypto-store");
 const { createConfigSnapshot, deleteConfigSnapshot, listConfigSnapshots, restoreConfigSnapshotById } = require("./config-snapshots");
 const { ptyRuntimeStatus } = require("./pty-runtime");
 const { createUpdateChecker } = require("./update-checker");
@@ -441,7 +442,8 @@ function inspectRestoreDatabase(body) {
     const rows = identityRowsFromBackup(tempDb);
     const identities = identityTargetMap(rows, payload.identity_bindings);
     return {
-      ok: identities.missing.length === 0,
+      ok: true,
+      identity_bindings_complete: identities.missing.length === 0,
       missing_identities: identities.missing,
       unresolved_identities: identities.unresolved,
       encrypted_identities: identities.encrypted,
@@ -491,10 +493,12 @@ function normalizeRestoredIdentityPaths(dbPath, bindings = []) {
   try {
     const rows = identityRowsFromBackup(restoredDb);
     const identities = identityTargetMap(rows, bindings);
-    if (identities.missing.length) return identities;
     const update = restoredDb.prepare("UPDATE connections SET identity_file=? WHERE id=?");
     for (const item of identities.mappings) {
       update.run(item.target_path, item.connection_id);
+    }
+    for (const item of identities.unresolved) {
+      update.run(null, item.connection_id);
     }
     return identities;
   } finally {
@@ -733,23 +737,55 @@ async function handleApi(req, res, pathname) {
   if (req.method === "POST" && pathname === "/api/restore/database") {
     const body = await readBody(req);
     const payload = parseRestorePayload(body);
-    const check = inspectRestoreDatabase(body);
-    if (!check.ok) return sendJson(res, { error: "数据库备份中的连接尚未全部绑定私钥", ...check }, 400);
+    inspectRestoreDatabase(body);
     createConfigSnapshot("恢复数据库前自动快照");
-    const backup = `${DB_PATH}.bak-${Date.now()}`;
-    if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, backup);
+    const previousSecurity = readSecuritySettings();
     stopAllForwards();
     closeDatabase();
-    fs.writeFileSync(DB_PATH, payload.database);
-    if (payload.security?.encryption_enabled) {
-      writeSecuritySettings({
-        encryption_enabled: true,
-        encryption_salt: payload.security.encryption_salt || "",
-        encryption_check: payload.security.encryption_check || ""
+    const backup = `${DB_PATH}.bak-${Date.now()}`;
+    const clearDatabaseSidecars = () => {
+      for (const file of [`${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+        try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch {}
+      }
+    };
+    if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, backup);
+    try {
+      clearDatabaseSidecars();
+      fs.writeFileSync(DB_PATH, payload.database);
+      if (payload.security) {
+        writeSecuritySettings({
+          encryption_enabled: Boolean(payload.security.encryption_enabled),
+          encryption_salt: payload.security.encryption_salt || "",
+          encryption_check: payload.security.encryption_check || ""
+        });
+        lockEncryption();
+      }
+      const identities = normalizeRestoredIdentityPaths(DB_PATH, payload.identity_bindings);
+      reopenDatabase();
+      return sendJson(res, {
+        ok: true,
+        backup,
+        restart_required: false,
+        database_reopened: true,
+        encrypted_bundle: Boolean(payload.security?.encryption_enabled),
+        missing_identities: identities.missing,
+        unresolved_identities: identities.unresolved,
+        encrypted_identities: identities.encrypted,
+        mapped_identities: identities.mappings
       });
+    } catch (error) {
+      try {
+        closeDatabase();
+        clearDatabaseSidecars();
+        if (fs.existsSync(backup)) fs.copyFileSync(backup, DB_PATH);
+        writeSecuritySettings(previousSecurity);
+        lockEncryption();
+        reopenDatabase();
+      } catch (rollbackError) {
+        console.error(`database restore rollback failed: ${rollbackError.message}`);
+      }
+      throw error;
     }
-    const identities = normalizeRestoredIdentityPaths(DB_PATH, payload.identity_bindings);
-    return sendJson(res, { ok: true, backup, restart_required: true, encrypted_bundle: Boolean(payload.security?.encryption_enabled), ...identities });
   }
   if (req.method === "POST" && pathname === "/api/logs/delete") {
     const data = await readJson(req);

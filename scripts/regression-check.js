@@ -173,6 +173,8 @@ async function main() {
   ok("数据库导出明确选择是否包含 SSH 密码", importFrontend.includes("不包含密码（推荐）") && importFrontend.includes("包含密码") && serverSource.includes('include_passwords') && read("src/db.ts").includes("UPDATE connections SET ssh_password=NULL"));
   ok("数据库恢复始终列出全部连接及原验证方式", importFrontend.includes("showDatabaseCredentialModal") && importFrontend.includes("原验证方式") && importFrontend.includes("设置所填密码") && serverSource.includes("connections: rows.map") && serverSource.includes("credential_bindings"));
   const importerSource = read("src/importer.ts");
+  const dbSource = read("src/db.ts");
+  ok("SSH 连接支持持久排序并在两类导入中编辑", indexHtml.includes('id="conn_sort_order"') && frontend.includes("setImportSortOrder") && frontend.includes("data-restore-sort") && importerSource.includes("sort_order: 1") && dbSource.includes("sort_order INTEGER NOT NULL DEFAULT 1") && dbSource.includes("ORDER BY group_name COLLATE NOCASE, sort_order, created_at, id"));
   ok("同名私钥不会绕过连接级绑定", importerSource.includes("identity_file: null") && importerSource.includes("missing_identity: Boolean(keyName)") && !importerSource.includes("identityFileMap") && serverSource.includes("const target = requested ?") && !serverSource.includes("existingByName.get(keyName)"));
   ok("私钥绑定只接受已枚举路径", serverSource.includes("allowedPaths.has(path.resolve(requested))") && serverSource.includes("私钥绑定无效，请重新选择"));
   ok("SSH config 与数据库恢复允许保留未绑定私钥", !importFrontend.includes("个连接尚未绑定私钥") && importFrontend.includes("未重新绑定的普通私钥路径会被清除") && serverSource.includes("updateIdentity.run(null, item.connection_id)") && !serverSource.includes("数据库备份中的连接尚未全部绑定私钥"));
@@ -199,9 +201,9 @@ async function main() {
     restoreFixtureDb = null;
     const response = await fetch(`${base}/api/restore/database/check`, {method:"POST", body:fs.readFileSync(restoreFixturePath)});
     const restoreCheck = await response.json().catch(() => null);
-    ok("数据库恢复检查返回分组、逐连接引用和原验证方式", response.ok && restoreCheck?.missing_identities?.length === 1 && restoreCheck.missing_identities[0].key_name === missingKeyName && restoreCheck.missing_identities[0].connection_count === 12 && restoreCheck.missing_identities[0].connection_names?.length === 12 && restoreCheck.unresolved_identities?.length === 12 && restoreCheck.connections?.length === 12 && restoreCheck.connections.every(item => item.original_auth_type === "key") && typeof restoreCheck.upload_directory === "string");
+    ok("数据库恢复检查返回分组、逐连接引用、原验证方式和默认排序", response.ok && restoreCheck?.missing_identities?.length === 1 && restoreCheck.missing_identities[0].key_name === missingKeyName && restoreCheck.missing_identities[0].connection_count === 12 && restoreCheck.missing_identities[0].connection_names?.length === 12 && restoreCheck.unresolved_identities?.length === 12 && restoreCheck.connections?.length === 12 && restoreCheck.connections.every(item => item.original_auth_type === "key" && item.sort_order === 1) && typeof restoreCheck.upload_directory === "string");
   } catch (error) {
-    ok("数据库恢复检查返回分组、逐连接引用和原验证方式", false, error.message);
+    ok("数据库恢复检查返回分组、逐连接引用、原验证方式和默认排序", false, error.message);
   } finally {
     try { restoreFixtureDb?.close(); } catch {}
     try { fs.unlinkSync(restoreFixturePath); } catch {}
@@ -230,6 +232,7 @@ async function main() {
   if (Array.isArray(connections)) {
     ok("连接列表响应为数组", true, `${connections.length} 条连接`);
     ok("连接 API 不返回 SSH 密码", connections.every(item => !("ssh_password" in item)));
+    ok("连接 API 返回有效排序值", connections.every(item => Number.isInteger(item.sort_order) && item.sort_order >= 1));
   }
   else ok("连接列表响应为数组", false);
 

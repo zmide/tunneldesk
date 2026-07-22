@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS connections (
   tags TEXT,
   extra_args TEXT,
   autostart_forwards INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -102,6 +103,9 @@ CREATE TABLE IF NOT EXISTS app_meta (
   if (!connectionColumns.has("tags")) run("ALTER TABLE connections ADD COLUMN tags TEXT");
   if (!connectionColumns.has("auth_type")) run("ALTER TABLE connections ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'key'");
   if (!connectionColumns.has("ssh_password")) run("ALTER TABLE connections ADD COLUMN ssh_password TEXT");
+  if (!connectionColumns.has("sort_order")) {
+    run("ALTER TABLE connections ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 1");
+  }
   run("UPDATE connection_forwards SET status='stopped' WHERE pid IS NULL AND status='running'");
   const forwardColumns = new Set(all("PRAGMA table_info(connection_forwards)").map((row) => row.name));
   if (!forwardColumns.has("service_name")) run("ALTER TABLE connection_forwards ADD COLUMN service_name TEXT");
@@ -144,6 +148,14 @@ function validatePort(value, label) {
   return port;
 }
 
+function validateSortOrder(value) {
+  const order = Number(value);
+  if (!Number.isInteger(order) || order < 1 || order > 2147483647) {
+    throw new Error("排序值必须是 1-2147483647 之间的整数");
+  }
+  return order;
+}
+
 function pidRunning(pid) {
   if (!pid) return false;
   try {
@@ -178,7 +190,8 @@ function cleanConnection(data, defaultExtraArgs, existing = null) {
     ssh_password: password ? encryptText(password) : null,
     tags: String(data.tags || "").split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean).join(","),
     extra_args: encryptText(String(data.extra_args || defaultExtraArgs).trim()),
-    autostart_forwards: Number(data.autostart_forwards || 0) ? 1 : 0
+    autostart_forwards: Number(data.autostart_forwards || 0) ? 1 : 0,
+    sort_order: validateSortOrder(data.sort_order ?? existing?.sort_order ?? 1)
   };
 }
 
@@ -207,7 +220,7 @@ function cleanForward(data) {
 }
 
 function listConnections() {
-  const rows = all("SELECT * FROM connections ORDER BY group_name, name, id");
+  const rows = all("SELECT * FROM connections ORDER BY group_name COLLATE NOCASE, sort_order, created_at, id");
   return rows.map((conn) => ({
     ...conn,
     identity_file: decryptText(conn.identity_file),
@@ -240,9 +253,9 @@ function insertConnection(data, defaultExtraArgs) {
   const ts = now();
   const result = run(
     `INSERT INTO connections
-     (name, group_name, ssh_host, ssh_port, ssh_user, auth_type, identity_file, ssh_password, tags, extra_args, autostart_forwards, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, ts, ts]
+     (name, group_name, ssh_host, ssh_port, ssh_user, auth_type, identity_file, ssh_password, tags, extra_args, autostart_forwards, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, item.sort_order, ts, ts]
   );
   return Number(result.lastInsertRowid);
 }
@@ -252,8 +265,8 @@ function updateConnection(id, data, defaultExtraArgs) {
   if (!existing) throw new Error("连接不存在");
   const item = cleanConnection(data, defaultExtraArgs, existing);
   run(
-    `UPDATE connections SET name=?, group_name=?, ssh_host=?, ssh_port=?, ssh_user=?, auth_type=?, identity_file=?, ssh_password=?, tags=?, extra_args=?, autostart_forwards=?, updated_at=? WHERE id=?`,
-    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, now(), Number(id)]
+    `UPDATE connections SET name=?, group_name=?, ssh_host=?, ssh_port=?, ssh_user=?, auth_type=?, identity_file=?, ssh_password=?, tags=?, extra_args=?, autostart_forwards=?, sort_order=?, updated_at=? WHERE id=?`,
+    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, item.sort_order, now(), Number(id)]
   );
 }
 
@@ -459,7 +472,7 @@ function restoreConfigSnapshot(snapshot) {
     run("DELETE FROM connection_forwards");
     run("DELETE FROM connections");
     run("DELETE FROM forward_templates");
-    for (const row of snapshot.connections) run("INSERT INTO connections(id,name,group_name,ssh_host,ssh_port,ssh_user,auth_type,identity_file,ssh_password,tags,extra_args,autostart_forwards,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.name,row.group_name,row.ssh_host,row.ssh_port,row.ssh_user,row.auth_type || "key",row.identity_file,row.ssh_password || null,row.tags,row.extra_args,row.autostart_forwards,row.created_at,row.updated_at]);
+    for (const row of snapshot.connections) run("INSERT INTO connections(id,name,group_name,ssh_host,ssh_port,ssh_user,auth_type,identity_file,ssh_password,tags,extra_args,autostart_forwards,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.name,row.group_name,row.ssh_host,row.ssh_port,row.ssh_user,row.auth_type || "key",row.identity_file,row.ssh_password || null,row.tags,row.extra_args,row.autostart_forwards,Number.isInteger(Number(row.sort_order)) && Number(row.sort_order) > 0 ? Number(row.sort_order) : 1,row.created_at,row.updated_at]);
     for (const row of snapshot.forwards) run("INSERT INTO connection_forwards(id,connection_id,mode,service_name,service_type,service_note,url_scheme,bind_host,bind_port,target_host,target_port,pid,status,restore,reconnect_count,last_error,started_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.connection_id,row.mode,row.service_name,row.service_type,row.service_note,row.url_scheme,row.bind_host,row.bind_port,row.target_host,row.target_port,null,"stopped",0,0,row.last_error || null,null,row.created_at,row.updated_at]);
     for (const row of snapshot.forward_templates) run("INSERT INTO forward_templates(id,name,mode,service_name,service_type,service_note,url_scheme,bind_host,bind_port,target_host,target_port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.name,row.mode,row.service_name,row.service_type,row.service_note,row.url_scheme,row.bind_host,row.bind_port,row.target_host,row.target_port,row.created_at,row.updated_at]);
     db.exec("COMMIT");
@@ -514,6 +527,7 @@ module.exports = {
   get,
   all,
   validatePort,
+  validateSortOrder,
   pidRunning,
   cleanConnection,
   cleanForward,

@@ -65,6 +65,7 @@ function parseConfigText(text) {
         forwards: current.forwards,
         extra_args: DEFAULT_EXTRA_ARGS,
         autostart_forwards: 0,
+        sort_order: 1,
         autostart: 0
       });
     }

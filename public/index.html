@@ -97,8 +97,9 @@
         <div><label>SSH 用户</label><input id="conn_user" required placeholder="root"></div>
         <div><label>SSH 主机</label><input id="conn_host" required placeholder="example.com"></div>
       </div>
-      <div class="grid">
+      <div class="grid3">
         <div><label>SSH 端口</label><input id="conn_port" type="number" min="1" max="65535" value="22"></div>
+        <div><label>排序</label><input id="conn_sort_order" type="number" min="1" max="2147483647" step="1" value="1"></div>
         <div><label>启动 TunnelDesk 时自动启用转发</label><select id="conn_autostart"><option value="0">否</option><option value="1">是</option></select></div>
       </div>
       <label>标签</label><input id="conn_tags" placeholder="例如：生产 数据库 海外">

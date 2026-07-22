@@ -2,14 +2,29 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tunneldesk-db-reopen-"));
 process.env.TUNNELDESK_DATA_DIR = path.join(temporaryRoot, "data");
 process.env.TUNNELDESK_SSH_DIR = path.join(temporaryRoot, ".ssh");
+fs.mkdirSync(process.env.TUNNELDESK_DATA_DIR, {recursive:true});
+const legacy = new DatabaseSync(path.join(process.env.TUNNELDESK_DATA_DIR, "tunnels.db"));
+legacy.exec(`CREATE TABLE connections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '默认分组',
+  ssh_host TEXT NOT NULL, ssh_port INTEGER NOT NULL DEFAULT 22, ssh_user TEXT NOT NULL,
+  auth_type TEXT NOT NULL DEFAULT 'key', identity_file TEXT, ssh_password TEXT, tags TEXT, extra_args TEXT,
+  autostart_forwards INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);`);
+const legacyInsert = legacy.prepare("INSERT INTO connections(name,group_name,ssh_host,ssh_port,ssh_user,auth_type,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)");
+legacyInsert.run("legacy-a", "测试", "a.invalid", 22, "root", "key", 1, 1);
+legacyInsert.run("legacy-b", "测试", "b.invalid", 22, "root", "key", 2, 2);
+legacy.close();
 
 const database = require("../dist/db");
 
 try {
+  const migrated = database.listConnections();
+  assert.deepEqual(migrated.map(item => item.sort_order), [1, 1]);
   const id = database.insertConnection({
     name: "reopen-check",
     group_name: "测试",
@@ -20,12 +35,16 @@ try {
     identity_file: ""
   }, "");
   assert.ok(id > 0);
+  assert.deepEqual(database.listConnections().map(item => item.name), ["legacy-a", "legacy-b", "reopen-check"]);
+  database.updateConnection(2, {...database.getConnection(2), sort_order:2}, "");
+  assert.deepEqual(database.listConnections().map(item => item.name), ["legacy-a", "reopen-check", "legacy-b"]);
   database.closeDatabase();
   database.reopenDatabase();
   const restored = database.listConnections().find(item => item.id === id);
   assert.equal(restored?.name, "reopen-check");
   assert.equal(restored?.identity_file, null);
-  console.log("Database close/reopen lifecycle passed.");
+  assert.equal(restored?.sort_order, 1);
+  console.log("Database close/reopen and connection ordering passed.");
 } finally {
   try { database.closeDatabase(); } catch {}
   fs.rmSync(temporaryRoot, { recursive: true, force: true });

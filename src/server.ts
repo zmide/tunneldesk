@@ -42,6 +42,7 @@ const {
   applyForwardTemplate,
   encryptStoredConnectionSecrets,
   decryptStoredConnectionSecrets,
+  validateSortOrder,
   run,
   closeDatabase,
   reopenDatabase,
@@ -297,9 +298,13 @@ function connectionRowsFromBackup(tempDb) {
   if (!table) return [];
   const columns = new Set(tempDb.prepare("PRAGMA table_info(connections)").all().map((item: any) => item.name));
   if (!columns.has("id") || !columns.has("name")) return [];
+  if (!columns.has("sort_order")) {
+    tempDb.exec("ALTER TABLE connections ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 1");
+    columns.add("sort_order");
+  }
   const optional = [
     ["ssh_host", "''"], ["ssh_port", "22"], ["ssh_user", "''"], ["auth_type", "'key'"],
-    ["identity_file", "NULL"], ["ssh_password", "NULL"], ["extra_args", "''"]
+    ["identity_file", "NULL"], ["ssh_password", "NULL"], ["extra_args", "''"], ["sort_order", "1"]
   ].map(([name, fallback]) => columns.has(name) ? name : `${fallback} AS ${name}`);
   return tempDb.prepare(`SELECT id, name, ${optional.join(", ")} FROM connections ORDER BY id`).all();
 }
@@ -443,17 +448,24 @@ function normalizeCredentialBindings(value) {
   for (const item of Array.isArray(value) ? value : []) {
     const connectionId = Number(item?.connection_id);
     if (!Number.isInteger(connectionId) || connectionId <= 0) continue;
-    const authType = String(item?.auth_type || "") === "password" ? "password" : "key";
-    if (authType === "key") {
-      const identityPath = String(item?.identity_path || "").trim();
-      if (identityPath) bindings.set(connectionId, {connection_id:connectionId, auth_type:"key", identity_path:identityPath});
+    const hasSortOrder = Object.prototype.hasOwnProperty.call(item || {}, "sort_order");
+    const sortOrder = hasSortOrder ? validateSortOrder(item.sort_order) : undefined;
+    const authType = String(item?.auth_type || "");
+    if (!authType) {
+      if (hasSortOrder) bindings.set(connectionId, {connection_id:connectionId, sort_order:sortOrder});
       continue;
     }
+    if (authType === "key") {
+      const identityPath = String(item?.identity_path || "").trim();
+      bindings.set(connectionId, {connection_id:connectionId, auth_type:"key", identity_path:identityPath, ...(hasSortOrder ? {sort_order:sortOrder} : {})});
+      continue;
+    }
+    if (authType !== "password") throw new Error(`连接 ${connectionId} 的验证方式无效`);
     const passwordAction = ["preserve", "replace", "clear"].includes(String(item?.password_action)) ? String(item.password_action) : "preserve";
     const password = passwordAction === "replace" ? String(item?.password || "") : "";
     if (passwordAction === "replace" && !password) throw new Error(`连接 ${connectionId} 的新密码不能为空`);
     if (password.length > 4096) throw new Error(`连接 ${connectionId} 的密码过长`);
-    bindings.set(connectionId, {connection_id:connectionId, auth_type:"password", password_action:passwordAction, password});
+    bindings.set(connectionId, {connection_id:connectionId, auth_type:"password", password_action:passwordAction, password, ...(hasSortOrder ? {sort_order:sortOrder} : {})});
   }
   return bindings;
 }
@@ -484,6 +496,7 @@ function inspectRestoreDatabase(body) {
           ssh_host: row.ssh_host || "",
           ssh_port: Number(row.ssh_port || 22),
           ssh_user: row.ssh_user || "",
+          sort_order: Number(row.sort_order || 1),
           auth_type: authType,
           original_auth_type: authType,
           key_name: identityFile && !identityFile.startsWith("tdenc:v1:") ? path.posix.basename(identityFile.replace(/\\/g, "/")) : "",
@@ -569,7 +582,9 @@ function normalizeRestoredCredentials(dbPath, identityBindings = [], credentialB
     }
     const updatePassword = restoredDb.prepare("UPDATE connections SET auth_type='password', identity_file=NULL, ssh_password=? WHERE id=?");
     const preservePassword = restoredDb.prepare("UPDATE connections SET auth_type='password', identity_file=NULL WHERE id=?");
+    const updateSortOrder = restoredDb.prepare("UPDATE connections SET sort_order=? WHERE id=?");
     for (const item of credentials.values()) {
+      if (item.sort_order) updateSortOrder.run(item.sort_order, item.connection_id);
       if (item.auth_type !== "password") continue;
       if (item.password_action === "replace" && encryptedBundle) throw new Error("加密迁移包不能在恢复前改写密码；请恢复并解锁后在连接设置中修改");
       if (item.password_action === "replace") updatePassword.run(encryptionEnabled ? encryptText(item.password) : item.password, item.connection_id);

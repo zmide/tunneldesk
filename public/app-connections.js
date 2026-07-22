@@ -282,6 +282,7 @@ function connPayload() {
     ssh_user:$("conn_user").value.trim(),
     ssh_host:$("conn_host").value.trim(),
     ssh_port:Number($("conn_port").value||22),
+    sort_order:Number($("conn_sort_order").value||1),
     auth_type:passwordAuth ? "password" : "key",
     identity_file:passwordAuth ? "" : $("conn_key").value,
     ssh_password:passwordAuth ? $("conn_password").value : "",
@@ -369,6 +370,7 @@ function resetConnectionForm(){
   $("conn_id").value="";
   renderGroupOptions(pendingGroup || "默认分组");
   $("conn_port").value=22;
+  $("conn_sort_order").value=1;
   $("conn_auth_type").value="key";
   $("conn_password").value="";
   $("conn_tags").value="";
@@ -600,6 +602,7 @@ function editConnection(id, updateTab=true){
   $("conn_user").value=c.ssh_user;
   $("conn_host").value=c.ssh_host;
   $("conn_port").value=c.ssh_port;
+  $("conn_sort_order").value=c.sort_order || 1;
   $("conn_auth_type").value=c.auth_type || "key";
   $("conn_password").value="";
   $("conn_tags").value=c.tags || "";

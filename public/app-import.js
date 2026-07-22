@@ -126,7 +126,7 @@ async function uploadImportKeys(){
 function renderImport(results){
   if (!$("importResults")) return;
   const tunnels = importState.tunnels || [];
-  $("importResults").innerHTML = tunnels.map((t,i)=>`<div class="panel"><strong>${esc(t.name)}</strong><div class="cmd">${esc(t.ssh_user)}@${esc(t.ssh_host)}:${t.ssh_port}</div><div>${(t.forwards||[]).map(f=>`${f.bind_host}:${f.bind_port} -> ${f.target_host}:${f.target_port}`).join("；")}</div>${t.identity_name ? `<div class="identity-binding-summary"><span>原密钥：${esc(t.identity_name)}</span><span class="${t.missing_identity ? "muted" : "success"}">${t.missing_identity ? "未绑定（可直接导入）" : `已绑定：${esc(identityDisplayName(t.identity_file))}`}</span></div>` : ""}<div class="muted">${results?esc(results[i]?.output||"OK"):(t.missing_identity?"未指定私钥，可稍后补充；使用前请确认默认 SSH 认证可用":"待测试")}</div></div>`).join("") || "";
+  $("importResults").innerHTML = tunnels.map((t,i)=>`<div class="panel"><div class="import-connection-head"><strong>${esc(t.name)}</strong><label>排序 <input type="number" min="1" max="2147483647" step="1" value="${Number(t.sort_order) || 1}" onchange="setImportSortOrder(${i},this.value)"></label></div><div class="cmd">${esc(t.ssh_user)}@${esc(t.ssh_host)}:${t.ssh_port}</div><div>${(t.forwards||[]).map(f=>`${f.bind_host}:${f.bind_port} -> ${f.target_host}:${f.target_port}`).join("；")}</div>${t.identity_name ? `<div class="identity-binding-summary"><span>原密钥：${esc(t.identity_name)}</span><span class="${t.missing_identity ? "muted" : "success"}">${t.missing_identity ? "未绑定（可直接导入）" : `已绑定：${esc(identityDisplayName(t.identity_file))}`}</span></div>` : ""}<div class="muted">${results?esc(results[i]?.output||"OK"):(t.missing_identity?"未指定私钥，可稍后补充；使用前请确认默认 SSH 认证可用":"待测试")}</div></div>`).join("") || "";
   const bindButton = $("bindImportKeysBtn");
   if (bindButton) {
     bindButton.hidden = !tunnels.some(item => item.identity_name);
@@ -198,6 +198,16 @@ async function downloadDatabaseBackup() {
   a.click();
   URL.revokeObjectURL(url);
   notify(includePasswords ? "数据库备份已下载（包含 SSH 密码）" : "数据库备份已下载（不包含 SSH 密码）", "success");
+}
+
+function setImportSortOrder(index, value) {
+  const order = Number(value);
+  if (!Number.isInteger(order) || order < 1 || order > 2147483647) {
+    importState.tunnels[index].sort_order = 1;
+    renderImport();
+    return notify("排序值必须是大于等于 1 的整数", "error");
+  }
+  importState.tunnels[index].sort_order = order;
 }
 
 async function downloadBackupBundle() {
@@ -364,7 +374,7 @@ function showDatabaseCredentialModal(items, options={}) {
       </div>
       <div id="identityBindingDirectory" class="muted"></div>
       <div class="identity-binding-toolbar"><span>选择要设置凭据的连接</span><div class="actions tight"><button id="identitySelectMatching" type="button">选择原同名</button><button id="identitySelectAll" type="button">全选</button><button id="identitySelectNone" type="button">取消选择</button></div></div>
-      <div id="identityBindingRows" class="identity-binding-rows">${rows.map(row => `<label class="identity-binding-row" data-binding-row="${escAttr(row.binding_id)}"><input type="checkbox" value="${escAttr(row.binding_id)}"><span><strong>${esc(row.connection_name || `连接 ${row.binding_id}`)}</strong><small>${esc(row.ssh_user || "")}@${esc(row.ssh_host || "")}:${esc(row.ssh_port || 22)}</small></span><span><small>原验证方式</small><code>${esc(originalCredential(row))}</code></span><span class="identity-binding-result" data-binding-result="${escAttr(row.binding_id)}"></span></label>`).join("") || `<div class="restore-credential-empty">该数据库没有 SSH 连接，可直接继续恢复。</div>`}</div>
+      <div id="identityBindingRows" class="identity-binding-rows">${rows.map(row => `<div class="identity-binding-row" data-binding-row="${escAttr(row.binding_id)}"><input type="checkbox" value="${escAttr(row.binding_id)}" aria-label="选择 ${escAttr(row.connection_name || `连接 ${row.binding_id}`)}"><span><strong>${esc(row.connection_name || `连接 ${row.binding_id}`)}</strong><small>${esc(row.ssh_user || "")}@${esc(row.ssh_host || "")}:${esc(row.ssh_port || 22)}</small></span><span><small>原验证方式</small><code>${esc(originalCredential(row))}</code></span><span class="restore-sort-field"><small>排序</small><input data-restore-sort="${escAttr(row.binding_id)}" aria-label="${escAttr(row.connection_name || `连接 ${row.binding_id}`)} 排序" type="number" min="1" max="2147483647" step="1" value="${Number(row.sort_order) || 1}"></span><span class="identity-binding-result" data-binding-result="${escAttr(row.binding_id)}"></span></div>`).join("") || `<div class="restore-credential-empty">该数据库没有 SSH 连接，可直接继续恢复。</div>`}</div>
       <div id="restoreKeyStatus" class="restore-key-status" role="status" aria-live="polite">${options.password_replacement_allowed === false ? "加密迁移包恢复前不能改写密码；恢复并解锁后可在连接设置中修改。" : "请选择连接后绑定私钥或设置密码，也可保留当前提示状态继续恢复。"}</div>
       <div class="actions credential-binding-actions"><button id="restoreKeyCancel">取消</button><button id="identityBindingTest" type="button">测试选中连接</button><button id="credentialClearSelected" type="button">清除选中凭据</button><button id="identityBindingStage" type="button">绑定所选私钥</button><button id="credentialPasswordStage" type="button" ${options.password_replacement_allowed === false ? "disabled" : ""}>设置所填密码</button><button id="identityBindingFinish" class="primary" type="button">继续恢复</button></div>
     </div>`;
@@ -372,7 +382,7 @@ function showDatabaseCredentialModal(items, options={}) {
     const status = $("restoreKeyStatus");
     const candidateSelect = $("identityBindingCandidate");
     const passwordInput = $("credentialPassword");
-    const selectedRows = () => [...modal.querySelectorAll("#identityBindingRows input:checked")].map(input => rows.find(row => row.binding_id === input.value)).filter(Boolean);
+    const selectedRows = () => [...modal.querySelectorAll('#identityBindingRows input[type="checkbox"]:checked')].map(input => rows.find(row => row.binding_id === input.value)).filter(Boolean);
     const currentCandidate = () => identityInfo.items.find(item => item.path === candidateSelect.value);
     const finish = result => {
       modal.hidden = true;
@@ -425,13 +435,13 @@ function showDatabaseCredentialModal(items, options={}) {
     $("identitySelectMatching").onclick = () => {
       const candidate = currentCandidate();
       if (!candidate) return setStatus("请先选择一把私钥", "error");
-      modal.querySelectorAll("#identityBindingRows input").forEach(input => {
+      modal.querySelectorAll('#identityBindingRows input[type="checkbox"]').forEach(input => {
         const row = rows.find(item => item.binding_id === input.value);
         input.checked = row?.original_auth_type === "key" && row.key_name === candidate.name;
       });
     };
-    $("identitySelectAll").onclick = () => modal.querySelectorAll("#identityBindingRows input").forEach(input => { input.checked = true; });
-    $("identitySelectNone").onclick = () => modal.querySelectorAll("#identityBindingRows input").forEach(input => { input.checked = false; });
+    $("identitySelectAll").onclick = () => modal.querySelectorAll('#identityBindingRows input[type="checkbox"]').forEach(input => { input.checked = true; });
+    $("identitySelectNone").onclick = () => modal.querySelectorAll('#identityBindingRows input[type="checkbox"]').forEach(input => { input.checked = false; });
     $("identityBindingStage").onclick = () => {
       try {
         const candidate = currentCandidate();
@@ -484,7 +494,17 @@ function showDatabaseCredentialModal(items, options={}) {
         setStatus(`测试完成：成功 ${response.ok} 个，失败 ${response.failed} 个。`, response.failed ? "error" : "success");
       } catch (error) { setStatus(error.message, "error"); }
     };
-    $("identityBindingFinish").onclick = () => finish([...staged.values()]);
+    $("identityBindingFinish").onclick = () => {
+      try {
+        const result = rows.map(row => {
+          const input = modal.querySelector(`[data-restore-sort="${CSS.escape(row.binding_id)}"]`);
+          const sortOrder = Number(input?.value || 1);
+          if (!Number.isInteger(sortOrder) || sortOrder < 1 || sortOrder > 2147483647) throw new Error(`连接 ${row.connection_name || row.connection_id} 的排序值无效`);
+          return {...(staged.get(row.binding_id) || {connection_id:Number(row.connection_id)}), sort_order:sortOrder};
+        });
+        finish(result);
+      } catch (error) { setStatus(error.message, "error"); }
+    };
     $("restoreKeyCancel").onclick = () => finish(null);
     $("restoreKeyClose").onclick = () => finish(null);
     modal.onclick = event => { if (event.target === modal) finish(null); };

@@ -485,6 +485,28 @@ function reopenDatabase() {
   return db;
 }
 
+function exportDatabaseBuffer(includePasswords = false) {
+  const temporary = path.join(DATA_DIR, `database-export-${process.pid}-${Date.now()}.db`);
+  let exportedDb = null;
+  try {
+    db.exec(`VACUUM INTO '${temporary.replace(/'/g, "''")}'`);
+    if (!includePasswords) {
+      exportedDb = new DatabaseSync(temporary);
+      const table = exportedDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='connections'").get();
+      if (table) {
+        const columns = new Set(exportedDb.prepare("PRAGMA table_info(connections)").all().map((item) => item.name));
+        if (columns.has("ssh_password")) exportedDb.exec("UPDATE connections SET ssh_password=NULL");
+      }
+      exportedDb.close();
+      exportedDb = null;
+    }
+    return fs.readFileSync(temporary);
+  } finally {
+    try { exportedDb?.close(); } catch {}
+    try { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); } catch {}
+  }
+}
+
 module.exports = {
   get db() { return db; },
   now,
@@ -517,5 +539,6 @@ module.exports = {
   restoreConfigSnapshot,
   ensureBuiltinForwardTemplates,
   closeDatabase,
-  reopenDatabase
+  reopenDatabase,
+  exportDatabaseBuffer
 };

@@ -271,6 +271,10 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
 .restore-key-status.busy { color:var(--accent2); }
 .identity-binding-source { display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:12px; margin-top:12px; }
 .identity-binding-source label { margin-top:0; }
+.credential-binding-source { display:grid; grid-template-columns:minmax(180px,.8fr) minmax(260px,1.1fr) minmax(220px,.9fr); gap:12px; margin-top:12px; align-items:end; }
+.credential-binding-source label { margin-top:0; }
+.credential-binding-actions { flex-wrap:wrap; }
+.restore-credential-empty { padding:20px; color:var(--muted); text-align:center; }
 .identity-binding-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; }
 .identity-binding-toolbar > span { font-weight:600; }
 .identity-binding-rows { max-height:min(42vh,420px); overflow:auto; display:grid; border:1px solid var(--line); border-radius:5px; }
@@ -1024,6 +1028,7 @@ details.advanced-settings > :not(summary) { margin-left:12px; margin-right:12px;
 @media (max-width:760px), (hover:none) and (pointer:coarse) {
   :root { --control-h:38px; }
   .identity-binding-source { grid-template-columns:1fr; }
+  .credential-binding-source { grid-template-columns:1fr; }
   .identity-binding-toolbar { align-items:flex-start; flex-direction:column; }
   .identity-binding-row { grid-template-columns:auto minmax(0,1fr); }
   .identity-binding-row > span:nth-of-type(n+2) { grid-column:2; }

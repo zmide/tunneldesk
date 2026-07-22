@@ -383,17 +383,36 @@ function resetConnectionForm(){
 function wireConnectionForm() {
   $("connectionForm").addEventListener("submit", async e => {
     e.preventDefault();
-    try {
-      const p=connPayload();
-      if(p.id) await api(`/api/connections/${p.id}`,{method:"PUT",body:JSON.stringify(p)});
-      else await api("/api/connections",{method:"POST",body:JSON.stringify(p)});
-      pendingGroup = "";
-      groupOpen.add(p.group_name);
-      saveGroupState();
-      await loadAll();
-      notify("连接已保存","success");
-    } catch(err){notify(err.message,"error");}
+    await saveConnectionForm(false, e.submitter);
   });
+}
+
+async function saveConnectionForm(clearAfterSave=false, trigger=null) {
+  const form = $("connectionForm");
+  if (!form || form.dataset.saving === "1") return;
+  form.dataset.saving = "1";
+  if (trigger) setButtonBusy(trigger, true, "保存中...");
+  try {
+    const p=connPayload();
+    if(p.id) await api(`/api/connections/${p.id}`,{method:"PUT",body:JSON.stringify(p)});
+    else await api("/api/connections",{method:"POST",body:JSON.stringify(p)});
+    pendingGroup = "";
+    groupOpen.add(p.group_name);
+    saveGroupState();
+    await loadAll();
+    if (clearAfterSave && !p.id) {
+      resetConnectionForm();
+      await loadKeys().catch(()=>{});
+      $("conn_name")?.focus();
+      notify("连接已保存，表单已清空","success");
+    } else {
+      notify("连接已保存","success");
+    }
+  } catch(err){notify(err.message,"error");}
+  finally {
+    delete form.dataset.saving;
+    if (trigger) setButtonBusy(trigger, false);
+  }
 }
 
 async function loadKeys(selected) {
@@ -575,6 +594,7 @@ function editConnection(id, updateTab=true){
   if(!c) return;
   $("view-edit").innerHTML = $("connectionFormTpl").innerHTML;
   $("conn_id").value=c.id;
+  if ($("connSaveAndClear")) $("connSaveAndClear").hidden = true;
   $("conn_name").value=c.name;
   renderGroupOptions(c.group_name);
   $("conn_user").value=c.ssh_user;

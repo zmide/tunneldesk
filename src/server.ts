@@ -44,7 +44,8 @@ const {
   decryptStoredConnectionSecrets,
   run,
   closeDatabase,
-  reopenDatabase
+  reopenDatabase,
+  exportDatabaseBuffer
 } = require("./db");
 const {
   listIdentityFiles,
@@ -81,7 +82,7 @@ const { cancelSftpJob, clearFinishedSftpJobs, compressJob, copyJob, deleteSftpJo
 const { appendSystemLog, deleteLogs, listLogs, readLog, readRawLog } = require("./logs");
 const { listNotifications, notifyEvent } = require("./notifications");
 const { authRequired, isAuthenticated, isLocalRequest, login, logout, publicSecuritySettings, readSecuritySettings, resetWebAccessSecurity, sameOrigin, secureHeaders, setPassword, setToken, updateSecurityOptions, writeSecuritySettings } = require("./security");
-const { disableEncryption, enableEncryption, lockEncryption, unlockEncryption } = require("./crypto-store");
+const { disableEncryption, enableEncryption, encryptionReady, encryptText, lockEncryption, unlockEncryption } = require("./crypto-store");
 const { createConfigSnapshot, deleteConfigSnapshot, listConfigSnapshots, restoreConfigSnapshotById } = require("./config-snapshots");
 const { ptyRuntimeStatus } = require("./pty-runtime");
 const { createUpdateChecker } = require("./update-checker");
@@ -291,15 +292,16 @@ function withDatabaseBuffer(body, callback) {
   }
 }
 
-function identityRowsFromBackup(tempDb) {
+function connectionRowsFromBackup(tempDb) {
   const table = tempDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='connections'").get();
   if (!table) return [];
   const columns = new Set(tempDb.prepare("PRAGMA table_info(connections)").all().map((item: any) => item.name));
-  if (!columns.has("id") || !columns.has("name") || !columns.has("identity_file")) return [];
+  if (!columns.has("id") || !columns.has("name")) return [];
   const optional = [
-    ["ssh_host", "''"], ["ssh_port", "22"], ["ssh_user", "''"], ["auth_type", "'key'"], ["extra_args", "''"]
+    ["ssh_host", "''"], ["ssh_port", "22"], ["ssh_user", "''"], ["auth_type", "'key'"],
+    ["identity_file", "NULL"], ["ssh_password", "NULL"], ["extra_args", "''"]
   ].map(([name, fallback]) => columns.has(name) ? name : `${fallback} AS ${name}`);
-  return tempDb.prepare(`SELECT id, name, ${optional.join(", ")}, identity_file FROM connections WHERE identity_file IS NOT NULL AND TRIM(identity_file) <> ''`).all();
+  return tempDb.prepare(`SELECT id, name, ${optional.join(", ")} FROM connections ORDER BY id`).all();
 }
 
 function storageSettingsView() {
@@ -436,13 +438,61 @@ function identityTargetMap(rows, requestedBindings = []) {
   return { missing: [...missingByName.values()], unresolved, encrypted, mappings };
 }
 
+function normalizeCredentialBindings(value) {
+  const bindings = new Map();
+  for (const item of Array.isArray(value) ? value : []) {
+    const connectionId = Number(item?.connection_id);
+    if (!Number.isInteger(connectionId) || connectionId <= 0) continue;
+    const authType = String(item?.auth_type || "") === "password" ? "password" : "key";
+    if (authType === "key") {
+      const identityPath = String(item?.identity_path || "").trim();
+      if (identityPath) bindings.set(connectionId, {connection_id:connectionId, auth_type:"key", identity_path:identityPath});
+      continue;
+    }
+    const passwordAction = ["preserve", "replace", "clear"].includes(String(item?.password_action)) ? String(item.password_action) : "preserve";
+    const password = passwordAction === "replace" ? String(item?.password || "") : "";
+    if (passwordAction === "replace" && !password) throw new Error(`连接 ${connectionId} 的新密码不能为空`);
+    if (password.length > 4096) throw new Error(`连接 ${connectionId} 的密码过长`);
+    bindings.set(connectionId, {connection_id:connectionId, auth_type:"password", password_action:passwordAction, password});
+  }
+  return bindings;
+}
+
 function inspectRestoreDatabase(body) {
   const payload = parseRestorePayload(body);
   return withDatabaseBuffer(payload.database, (tempDb) => {
-    const rows = identityRowsFromBackup(tempDb);
-    const identities = identityTargetMap(rows, payload.identity_bindings);
+    const rows = connectionRowsFromBackup(tempDb);
+    const requestedCredentials = normalizeCredentialBindings(payload.credential_bindings);
+    const keyRows = rows.filter((row) => {
+      const requested = requestedCredentials.get(Number(row.id));
+      return requested?.auth_type === "key" || (requested?.auth_type !== "password" && String(row.auth_type || "key") !== "password" && String(row.identity_file || "").trim());
+    });
+    const requestedIdentities = [
+      ...(Array.isArray(payload.identity_bindings) ? payload.identity_bindings : []),
+      ...[...requestedCredentials.values()].filter((item) => item.auth_type === "key" && item.identity_path).map((item) => ({connection_id:item.connection_id, identity_path:item.identity_path}))
+    ];
+    const identities = identityTargetMap(keyRows, requestedIdentities);
     return {
       ok: true,
+      connections: rows.map((row) => {
+        const authType = String(row.auth_type || "key") === "password" ? "password" : "key";
+        const identityFile = String(row.identity_file || "");
+        const password = String(row.ssh_password || "");
+        return {
+          connection_id: Number(row.id),
+          connection_name: row.name || `连接 ${row.id}`,
+          ssh_host: row.ssh_host || "",
+          ssh_port: Number(row.ssh_port || 22),
+          ssh_user: row.ssh_user || "",
+          auth_type: authType,
+          original_auth_type: authType,
+          key_name: identityFile && !identityFile.startsWith("tdenc:v1:") ? path.posix.basename(identityFile.replace(/\\/g, "/")) : "",
+          identity_encrypted: identityFile.startsWith("tdenc:v1:"),
+          has_password: Boolean(password),
+          password_encrypted: password.startsWith("tdenc:v1:"),
+          extra_args: row.extra_args || ""
+        };
+      }),
       identity_bindings_complete: identities.missing.length === 0,
       missing_identities: identities.missing,
       unresolved_identities: identities.unresolved,
@@ -450,7 +500,10 @@ function inspectRestoreDatabase(body) {
       mapped_identities: identities.mappings,
       available_identities: listIdentityFiles(),
       upload_directory: PROJECT_SSH_DIR,
-      encrypted_bundle: Boolean(payload.security?.encryption_enabled)
+      encrypted_bundle: Boolean(payload.security?.encryption_enabled),
+      password_replacement_allowed: payload.security
+        ? !Boolean(payload.security.encryption_enabled)
+        : (!readSecuritySettings().encryption_enabled || encryptionReady())
     };
   });
 }
@@ -460,17 +513,22 @@ function parseRestorePayload(body) {
     const parsed = JSON.parse(body.toString("utf8"));
     if (parsed && parsed.type === "tunneldesk-restore-request-v1" && parsed.payload_base64) {
       const nested = parseRestorePayload(Buffer.from(parsed.payload_base64, "base64"));
-      return { ...nested, identity_bindings: Array.isArray(parsed.identity_bindings) ? parsed.identity_bindings : [] };
+      return {
+        ...nested,
+        identity_bindings: Array.isArray(parsed.identity_bindings) ? parsed.identity_bindings : [],
+        credential_bindings: Array.isArray(parsed.credential_bindings) ? parsed.credential_bindings : []
+      };
     }
     if (parsed && parsed.type === "tunneldesk-backup-v1" && parsed.database_base64) {
       return {
         database: Buffer.from(parsed.database_base64, "base64"),
         security: parsed.security || null,
-        identity_bindings: []
+        identity_bindings: [],
+        credential_bindings: []
       };
     }
   } catch {}
-  return { database: body, security: null, identity_bindings: [] };
+  return { database: body, security: null, identity_bindings: [], credential_bindings: [] };
 }
 
 function backupBundle() {
@@ -488,19 +546,37 @@ function backupBundle() {
   };
 }
 
-function normalizeRestoredIdentityPaths(dbPath, bindings = []) {
+function normalizeRestoredCredentials(dbPath, identityBindings = [], credentialBindings = [], encryptedBundle = false, encryptionEnabled = false) {
   const restoredDb = new DatabaseSync(dbPath);
   try {
-    const rows = identityRowsFromBackup(restoredDb);
-    const identities = identityTargetMap(rows, bindings);
-    const update = restoredDb.prepare("UPDATE connections SET identity_file=? WHERE id=?");
+    const rows = connectionRowsFromBackup(restoredDb);
+    const credentials = normalizeCredentialBindings(credentialBindings);
+    const keyRows = rows.filter((row) => {
+      const requested = credentials.get(Number(row.id));
+      return requested?.auth_type === "key" || (requested?.auth_type !== "password" && String(row.auth_type || "key") !== "password" && String(row.identity_file || "").trim());
+    });
+    const requestedIdentities = [
+      ...(Array.isArray(identityBindings) ? identityBindings : []),
+      ...[...credentials.values()].filter((item) => item.auth_type === "key" && item.identity_path).map((item) => ({connection_id:item.connection_id, identity_path:item.identity_path}))
+    ];
+    const identities = identityTargetMap(keyRows, requestedIdentities);
+    const updateIdentity = restoredDb.prepare("UPDATE connections SET auth_type='key', identity_file=?, ssh_password=NULL WHERE id=?");
     for (const item of identities.mappings) {
-      update.run(item.target_path, item.connection_id);
+      updateIdentity.run(item.target_path, item.connection_id);
     }
     for (const item of identities.unresolved) {
-      update.run(null, item.connection_id);
+      updateIdentity.run(null, item.connection_id);
     }
-    return identities;
+    const updatePassword = restoredDb.prepare("UPDATE connections SET auth_type='password', identity_file=NULL, ssh_password=? WHERE id=?");
+    const preservePassword = restoredDb.prepare("UPDATE connections SET auth_type='password', identity_file=NULL WHERE id=?");
+    for (const item of credentials.values()) {
+      if (item.auth_type !== "password") continue;
+      if (item.password_action === "replace" && encryptedBundle) throw new Error("加密迁移包不能在恢复前改写密码；请恢复并解锁后在连接设置中修改");
+      if (item.password_action === "replace") updatePassword.run(encryptionEnabled ? encryptText(item.password) : item.password, item.connection_id);
+      else if (item.password_action === "clear") updatePassword.run(null, item.connection_id);
+      else preservePassword.run(item.connection_id);
+    }
+    return { ...identities, credential_bindings: [...credentials.values()].map((item) => ({...item, password:item.password ? "(replaced)" : ""})) };
   } finally {
     restoredDb.close();
   }
@@ -710,12 +786,14 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, raw ? readRawLog(url.searchParams.get("path") || "") : readLog(url.searchParams.get("path") || ""), { "Content-Type": "text/plain; charset=utf-8" });
   }
   if (req.method === "GET" && pathname === "/api/backup/database") {
-    if (!fs.existsSync(DB_PATH)) return sendJson(res, { error: "Database not found" }, 404);
-    const body = fs.readFileSync(DB_PATH);
+    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const includePasswords = url.searchParams.get("include_passwords") === "1";
+    const body = exportDatabaseBuffer(includePasswords);
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
       "Content-Length": body.length,
-      "Content-Disposition": `attachment; filename="tunneldesk-${Date.now()}.db"`
+      "Content-Disposition": `attachment; filename="tunneldesk-${Date.now()}${includePasswords ? "-with-passwords" : ""}.db"`,
+      "X-TunnelDesk-Passwords-Included": includePasswords ? "1" : "0"
     });
     res.end(body);
     return;
@@ -760,7 +838,13 @@ async function handleApi(req, res, pathname) {
         });
         lockEncryption();
       }
-      const identities = normalizeRestoredIdentityPaths(DB_PATH, payload.identity_bindings);
+      const identities = normalizeRestoredCredentials(
+        DB_PATH,
+        payload.identity_bindings,
+        payload.credential_bindings,
+        Boolean(payload.security?.encryption_enabled),
+        Boolean(readSecuritySettings().encryption_enabled)
+      );
       reopenDatabase();
       return sendJson(res, {
         ok: true,

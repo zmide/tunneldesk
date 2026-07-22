@@ -170,10 +170,12 @@ async function main() {
   const importExportAt = indexHtml.indexOf('id="import-export"');
   ok("导入结果并入导入配置", importSourceAt >= 0 && importResultsAt > importSourceAt && importResultsAt < importExportAt && !importFrontend.includes('"import-results"') && !workspaceFrontend.includes('"import-results"'));
   ok("SSH config 与数据库使用连接级私钥绑定器", importFrontend.includes("showIdentityBindingModal") && importFrontend.includes("测试选中连接") && importFrontend.includes("暂存绑定") && importFrontend.includes("选择原同名") && serverSource.includes("normalizeIdentityBindings"));
+  ok("数据库导出明确选择是否包含 SSH 密码", importFrontend.includes("不包含密码（推荐）") && importFrontend.includes("包含密码") && serverSource.includes('include_passwords') && read("src/db.ts").includes("UPDATE connections SET ssh_password=NULL"));
+  ok("数据库恢复始终列出全部连接及原验证方式", importFrontend.includes("showDatabaseCredentialModal") && importFrontend.includes("原验证方式") && importFrontend.includes("设置所填密码") && serverSource.includes("connections: rows.map") && serverSource.includes("credential_bindings"));
   const importerSource = read("src/importer.ts");
   ok("同名私钥不会绕过连接级绑定", importerSource.includes("identity_file: null") && importerSource.includes("missing_identity: Boolean(keyName)") && !importerSource.includes("identityFileMap") && serverSource.includes("const target = requested ?") && !serverSource.includes("existingByName.get(keyName)"));
   ok("私钥绑定只接受已枚举路径", serverSource.includes("allowedPaths.has(path.resolve(requested))") && serverSource.includes("私钥绑定无效，请重新选择"));
-  ok("SSH config 与数据库恢复允许保留未绑定私钥", !importFrontend.includes("个连接尚未绑定私钥") && importFrontend.includes("未绑定连接将清除旧路径并继续恢复") && serverSource.includes("update.run(null, item.connection_id)") && !serverSource.includes("数据库备份中的连接尚未全部绑定私钥"));
+  ok("SSH config 与数据库恢复允许保留未绑定私钥", !importFrontend.includes("个连接尚未绑定私钥") && importFrontend.includes("未重新绑定的普通私钥路径会被清除") && serverSource.includes("updateIdentity.run(null, item.connection_id)") && !serverSource.includes("数据库备份中的连接尚未全部绑定私钥"));
   ok("数据库恢复后重新打开句柄并自动刷新", serverSource.includes("reopenDatabase()") && serverSource.includes("database_reopened: true") && importFrontend.includes("数据库已恢复并自动刷新") && importFrontend.includes("await loadAll()"));
   ok("数据库迁移包同步启用或关闭加密状态", serverSource.includes("if (payload.security) {") && serverSource.includes("encryption_enabled: Boolean(payload.security.encryption_enabled)"));
   ok("导入导出按 SSH config 与数据库拆分", workspaceFrontend.includes("SSH config 导入导出") && workspaceFrontend.includes("数据库导入导出") && indexHtml.indexOf("导出 SSH config") < indexHtml.indexOf("数据库导入导出"));
@@ -197,9 +199,9 @@ async function main() {
     restoreFixtureDb = null;
     const response = await fetch(`${base}/api/restore/database/check`, {method:"POST", body:fs.readFileSync(restoreFixturePath)});
     const restoreCheck = await response.json().catch(() => null);
-    ok("数据库恢复检查返回分组与逐连接引用", response.ok && restoreCheck?.missing_identities?.length === 1 && restoreCheck.missing_identities[0].key_name === missingKeyName && restoreCheck.missing_identities[0].connection_count === 12 && restoreCheck.missing_identities[0].connection_names?.length === 12 && restoreCheck.unresolved_identities?.length === 12 && typeof restoreCheck.upload_directory === "string");
+    ok("数据库恢复检查返回分组、逐连接引用和原验证方式", response.ok && restoreCheck?.missing_identities?.length === 1 && restoreCheck.missing_identities[0].key_name === missingKeyName && restoreCheck.missing_identities[0].connection_count === 12 && restoreCheck.missing_identities[0].connection_names?.length === 12 && restoreCheck.unresolved_identities?.length === 12 && restoreCheck.connections?.length === 12 && restoreCheck.connections.every(item => item.original_auth_type === "key") && typeof restoreCheck.upload_directory === "string");
   } catch (error) {
-    ok("数据库恢复检查返回分组与逐连接引用", false, error.message);
+    ok("数据库恢复检查返回分组、逐连接引用和原验证方式", false, error.message);
   } finally {
     try { restoreFixtureDb?.close(); } catch {}
     try { fs.unlinkSync(restoreFixturePath); } catch {}
@@ -250,6 +252,7 @@ async function main() {
   ok("配置快照列表响应为数组", Array.isArray(snapshots), Array.isArray(snapshots) ? `${snapshots.length} 个快照` : "");
   ok("批量命令提供 TXT/JSON 导出", frontend.includes("导出 TXT") && frontend.includes("导出 JSON"));
   ok("SSH 连接支持批量选择、设置与删除", frontend.includes("toggleConnectionBulkMode") && frontend.includes("openConnectionBulkSettings") && frontend.includes("/api/connections/bulk-update") && frontend.includes("performBulkDeleteConnections"));
+  ok("新增 SSH 连接支持保存并清空", indexHtml.includes('id="connSaveAndClear"') && indexHtml.includes("保存并清空") && indexHtml.includes("saveConnectionForm(true,this)") && frontend.includes("表单已清空") && frontend.includes('$("connSaveAndClear").hidden = true'));
   ok("SSH 批量设置仅允许分组、端口和登录凭据", read("src/db.ts").includes("function bulkUpdateConnections") && read("src/db.ts").includes('changes, "group_name"') && read("src/db.ts").includes('changes, "ssh_port"') && read("src/server.ts").includes("所选私钥不在允许的密钥目录中"));
   ok("转发列表全选同步全选与半选状态", frontend.includes('id="forwardSelectAll"') && frontend.includes("selectAll.indeterminate") && frontend.includes("全选转发"));
 

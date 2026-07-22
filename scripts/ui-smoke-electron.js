@@ -329,6 +329,40 @@ app.whenReady().then(async () => {
     };
     return {found:true,passwordMode,keyMode};
   })()`);
+  const saveAndClearUi = await window.webContents.executeJavaScript(`(async () => {
+    const originalApi = api;
+    const originalLoadAll = loadAll;
+    const originalLoadKeys = loadKeys;
+    const originalNotify = notify;
+    const saved = [];
+    const notices = [];
+    api = async (url, options={}) => { if(url==='/api/connections'&&options.method==='POST') saved.push(JSON.parse(options.body)); return {}; };
+    loadAll = async () => {};
+    loadKeys = async () => {};
+    notify = (...args) => notices.push(args);
+    newConnection();
+    document.querySelector('#conn_name').value='save-clear-test';
+    document.querySelector('#conn_user').value='root';
+    document.querySelector('#conn_host').value='example.test';
+    const button=document.querySelector('#connSaveAndClear');
+    const visible=Boolean(button&&!button.hidden&&getComputedStyle(button).display!=='none');
+    button?.click();
+    await new Promise(resolve=>setTimeout(resolve,25));
+    const result={
+      visible,
+      saved:saved.length===1&&saved[0].name==='save-clear-test'&&saved[0].ssh_host==='example.test',
+      cleared:document.querySelector('#conn_name')?.value===''&&document.querySelector('#conn_user')?.value===''&&document.querySelector('#conn_host')?.value===''&&document.querySelector('#conn_port')?.value==='22',
+      defaultsRestored:document.querySelector('#conn_auth_type')?.value==='key'&&document.querySelector('#conn_extra')?.value.includes('ServerAliveInterval=60'),
+      focused:document.activeElement===document.querySelector('#conn_name'),
+      notice:notices.some(args=>String(args[0]).includes('表单已清空')),
+      readyAgain:button?.disabled===false&&button?.textContent.trim()==='保存并清空'
+    };
+    api=originalApi;
+    loadAll=originalLoadAll;
+    loadKeys=originalLoadKeys;
+    notify=originalNotify;
+    return result;
+  })()`);
   const notificationUi = await window.webContents.executeJavaScript(`(async () => {
     const originalNotify = notify;
     const originalDesktop = showDesktopNotification;
@@ -413,6 +447,44 @@ app.whenReady().then(async () => {
     result.closed = document.querySelector('#modal').hidden && !document.querySelector('#modal .restore-key-modal');
     loadIdentityBindingOptions = originalLoadIdentityBindingOptions;
     return result;
+  })()`);
+  const restoreCredentialUi = await window.webContents.executeJavaScript(`(async () => {
+    const originalLoadIdentityBindingOptions = loadIdentityBindingOptions;
+    loadIdentityBindingOptions = async () => ({items:[{name:'id_key',path:'/fixture/.ssh/id_key',source_label:'当前密钥目录'}],upload_directory:'/fixture/.ssh'});
+    const items = [
+      {connection_id:1,connection_name:'key-server',ssh_user:'root',ssh_host:'key.example',ssh_port:22,original_auth_type:'key',key_name:'id_old',has_password:false},
+      {connection_id:2,connection_name:'password-saved',ssh_user:'root',ssh_host:'saved.example',ssh_port:22,original_auth_type:'password',has_password:true,password_encrypted:false},
+      {connection_id:3,connection_name:'password-empty',ssh_user:'root',ssh_host:'empty.example',ssh_port:22,original_auth_type:'password',has_password:false,password_encrypted:false}
+    ];
+    const pending = showDatabaseCredentialModal(items,{subtitle:'credential smoke',password_replacement_allowed:true});
+    await new Promise(resolve => setTimeout(resolve,0));
+    const modal = document.querySelector('#modal');
+    const originalLabels = [...modal.querySelectorAll('.identity-binding-row code')].map(node=>node.textContent.trim());
+    const initialStatuses = [...modal.querySelectorAll('.identity-binding-result')].map(node=>node.textContent.trim());
+    const candidate = modal.querySelector('#identityBindingCandidate');
+    candidate.value='/fixture/.ssh/id_key';
+    modal.querySelector('input[value="1"]').checked=true;
+    modal.querySelector('#identityBindingStage').click();
+    modal.querySelector('#identitySelectNone').click();
+    modal.querySelector('input[value="3"]').checked=true;
+    modal.querySelector('#credentialPassword').value='fixture-password';
+    modal.querySelector('#credentialPasswordStage').click();
+    const stagedStatuses = [...modal.querySelectorAll('.identity-binding-result')].map(node=>node.textContent.trim());
+    const cardRect = modal.querySelector('.restore-credential-modal')?.getBoundingClientRect();
+    modal.querySelector('#identityBindingFinish').click();
+    const bindings = await pending;
+    loadIdentityBindingOptions = originalLoadIdentityBindingOptions;
+    return {
+      opened:originalLabels.length===3,
+      originalLabels,
+      initialStatuses,
+      stagedStatuses,
+      preservesSavedPassword:bindings.some(item=>item.connection_id===2&&item.auth_type==='password'&&item.password_action==='preserve'),
+      replacesMissingPassword:bindings.some(item=>item.connection_id===3&&item.auth_type==='password'&&item.password_action==='replace'&&item.password==='fixture-password'),
+      bindsKey:bindings.some(item=>item.connection_id===1&&item.auth_type==='key'&&item.identity_path==='/fixture/.ssh/id_key'),
+      cardWithinViewport:Boolean(cardRect&&cardRect.left>=-0.5&&cardRect.right<=innerWidth+0.5&&cardRect.top>=-0.5&&cardRect.bottom<=innerHeight+0.5),
+      closed:modal.hidden&&!modal.querySelector('.restore-credential-modal')
+    };
   })()`);
   const terminalUi = await window.webContents.executeJavaScript(`(() => {
     const first = connections[0];
@@ -840,14 +912,16 @@ app.whenReady().then(async () => {
     const image = await window.webContents.capturePage();
     require("node:fs").writeFileSync(path.join(process.cwd(), "data", "ui-smoke-mobile.png"), image.toPNG());
   }
-  console.log(JSON.stringify({ ...result, pages, navigationUi, aboutUi, desktopMenu, runningActions, authUi, notificationUi, restoreKeyUi, terminalUi, sftpUi, clipboardUi, dark, mobile, errors }, null, 2));
+  console.log(JSON.stringify({ ...result, pages, navigationUi, aboutUi, desktopMenu, runningActions, authUi, saveAndClearUi, notificationUi, restoreKeyUi, restoreCredentialUi, terminalUi, sftpUi, clipboardUi, dark, mobile, errors }, null, 2));
   const overflow = pages.some(page => page.scrollWidth > page.width) || mobile.scrollWidth > mobile.width || mobile.bodyWidth > mobile.width;
   const darkFailed = dark.theme !== "dark" || dark.buttonBackground === "rgb(255, 255, 255)";
   const menuFailed = !desktopMenu.opened || !desktopMenu.closedOnScroll || !mobile.menuOpened || !mobile.menuClosed;
   const runningActionsFailed = runningActions.found && (Math.abs(runningActions.open.width - runningActions.retry.width) > 1 || Math.abs(runningActions.open.height - runningActions.retry.height) > 1);
   const authUiFailed = !authUi.found || !Object.values(authUi.passwordMode).every(Boolean) || !Object.values(authUi.keyMode).every(Boolean);
+  const saveAndClearUiFailed = !Object.values(saveAndClearUi).every(Boolean);
   const notificationUiFailed = notificationUi.replayed !== 0 || !notificationUi.initialized || notificationUi.cursor !== notificationUi.stored;
   const restoreKeyUiFailed = !restoreKeyUi.opened || restoreKeyUi.rowCount !== 12 || JSON.stringify(restoreKeyUi.originalNames) !== JSON.stringify(['old-key-a','old-key-b']) || restoreKeyUi.candidates.length !== 3 || !restoreKeyUi.candidates.some(item=>item.includes('当前密钥目录')) || !restoreKeyUi.candidates.some(item=>item.includes('用户 ~/.ssh')) || !restoreKeyUi.candidateValuePreserved || !restoreKeyUi.stagesWindowsPath || !restoreKeyUi.continuedWithUnbound || !restoreKeyUi.continuedAllUnbound || !restoreKeyUi.configAllowsUnbound || !restoreKeyUi.acceptsAll || !restoreKeyUi.uploadDirectory || !restoreKeyUi.actions || !restoreKeyUi.statusReady || !restoreKeyUi.cardWithinViewport || !restoreKeyUi.closed;
+  const restoreCredentialUiFailed = !restoreCredentialUi.opened || !restoreCredentialUi.originalLabels.some(item=>item.includes('私钥：id_old')) || !restoreCredentialUi.originalLabels.some(item=>item.includes('备份含密码')) || !restoreCredentialUi.originalLabels.some(item=>item.includes('备份未包含密码')) || !restoreCredentialUi.initialStatuses.includes('保留备份密码') || !restoreCredentialUi.stagedStatuses.some(item=>item.includes('将绑定：id_key')) || !restoreCredentialUi.stagedStatuses.includes('将使用新密码') || !restoreCredentialUi.preservesSavedPassword || !restoreCredentialUi.replacesMissingPassword || !restoreCredentialUi.bindsKey || !restoreCredentialUi.cardWithinViewport || !restoreCredentialUi.closed;
   const settingsSectionsFailed = navigationUi.settingsChecks.some(item=>item.visible.length!==1||item.visible[0]!==item.requested||item.active.length!==1||item.active[0]!==item.requested) || navigationUi.aboutVisible?.length!==1 || navigationUi.aboutVisible?.[0]!=='settings-about' || navigationUi.aboutActive?.length!==1 || navigationUi.aboutActive?.[0]!=='settings-about';
   const importSectionsFailed = navigationUi.importChecks.some(item=>item.visible.length!==1||item.visible[0]!==item.requested||item.active.length!==1||item.active[0]!==item.requested);
   const importSourceCheck = navigationUi.importChecks.find(item => item.requested === 'import-source');
@@ -866,7 +940,7 @@ app.whenReady().then(async () => {
   const jobUi = sftpUi.jobUi || {};
   const jobUiFailed = !jobUi.found || !jobUi.mainHasRunning || !jobUi.mainHasFailed || !jobUi.mainHidesDone || !jobUi.historyEnabled || jobUi.historyCount !== '2' || !jobUi.historyHasDone || !jobUi.historyHidesCurrent || !jobUi.noManualRefresh || !jobUi.compactRow;
   const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
-  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || notificationUiFailed || restoreKeyUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons ? 1 : 0;
+  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons ? 1 : 0;
   window.destroy();
   process.exit(code);
 }).catch(error => {

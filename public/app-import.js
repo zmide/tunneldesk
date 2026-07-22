@@ -177,7 +177,18 @@ async function exportConfig(){
 async function copyExport(){ await navigator.clipboard.writeText($("export_text").value); notify("已复制", "success"); }
 
 async function downloadDatabaseBackup() {
-  const res = await fetch("/api/backup/database");
+  const passwordChoice = await chooseModal(
+    "下载数据库备份",
+    "数据库备份可能包含 SSH 登录密码。请选择是否导出密码信息；不包含密码更适合日常备份和跨设备传输。",
+    [
+      {label:"不包含密码（推荐）", value:"exclude", className:"primary"},
+      {label:"包含密码", value:"include", className:"danger"},
+      {label:"取消", value:"cancel"}
+    ]
+  );
+  if (passwordChoice === "cancel") return;
+  const includePasswords = passwordChoice === "include";
+  const res = await fetch(`/api/backup/database?include_passwords=${includePasswords ? "1" : "0"}`);
   if (!res.ok) return notify(await res.text(), "error");
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -186,10 +197,11 @@ async function downloadDatabaseBackup() {
   a.download = `tunneldesk-${new Date().toISOString().replace(/[:.]/g, "-")}.db`;
   a.click();
   URL.revokeObjectURL(url);
-  notify("数据库备份已下载", "success");
+  notify(includePasswords ? "数据库备份已下载（包含 SSH 密码）" : "数据库备份已下载（不包含 SSH 密码）", "success");
 }
 
 async function downloadBackupBundle() {
+  if (!await confirmModal("加密迁移包会包含数据库中的加密 SSH 凭据和解锁元数据，请妥善保管。继续下载？", "下载加密迁移包", "继续下载", "取消")) return;
   const res = await fetch("/api/backup/bundle");
   if (!res.ok) return notify(await res.text(), "error");
   const blob = await res.blob();
@@ -328,6 +340,158 @@ function showIdentityBindingModal(items, options={}) {
   });
 }
 
+function showDatabaseCredentialModal(items, options={}) {
+  const rows = (items || []).map((item, index) => ({...item, binding_id:String(item.connection_id ?? index)}));
+  return new Promise((resolve) => {
+    const modal = $("modal");
+    modal.onclick = null;
+    const staged = new Map(rows.filter(row => row.original_auth_type === "password").map(row => [row.binding_id, {
+      connection_id:Number(row.connection_id),
+      auth_type:"password",
+      password_action:row.has_password ? "preserve" : "clear"
+    }]));
+    let identityInfo = {items:[], upload_directory:options.upload_directory || ""};
+    const originalCredential = row => row.original_auth_type === "password"
+      ? `密码登录（${row.has_password ? row.password_encrypted ? "含加密密码" : "备份含密码" : "备份未包含密码"}）`
+      : row.identity_encrypted ? "私钥登录（路径已加密）" : `私钥：${row.key_name || "未记录"}`;
+    modal.innerHTML = `<div class="modal-card wide restore-key-modal restore-credential-modal" role="dialog" aria-modal="true" aria-labelledby="restoreKeyModalTitle">
+      <div class="restore-key-head"><div><h2 id="restoreKeyModalTitle">恢复连接凭据</h2><span>${esc(options.subtitle || "确认备份中每个连接原来的验证方式，并按需重新设置凭据。")}</span></div><button id="restoreKeyClose" class="icon-button" type="button" title="取消" aria-label="取消">${icon("x")}</button></div>
+      <p class="restore-key-intro">所有连接都会列在下方。可为选中连接绑定私钥或设置新密码；未重新绑定的普通私钥路径会被清除，备份中已有的密码默认保留。</p>
+      <div class="credential-binding-source">
+        <div><label for="identityBindingCandidate">已有私钥</label><select id="identityBindingCandidate"><option value="">正在加载私钥...</option></select></div>
+        <div><label>上传私钥</label><div class="upload-line"><label class="file-picker"><input id="identityBindingUpload" type="file" accept="*/*" onchange="updateFilePicker(this)"><span class="file-picker-button">选择文件</span><span class="file-picker-name">未选择文件</span></label><button id="identityBindingUploadBtn" type="button">上传</button></div></div>
+        <div><label for="credentialPassword">设置新 SSH 密码</label><input id="credentialPassword" type="password" autocomplete="new-password" placeholder="输入后应用到选中连接" ${options.password_replacement_allowed === false ? "disabled" : ""}></div>
+      </div>
+      <div id="identityBindingDirectory" class="muted"></div>
+      <div class="identity-binding-toolbar"><span>选择要设置凭据的连接</span><div class="actions tight"><button id="identitySelectMatching" type="button">选择原同名</button><button id="identitySelectAll" type="button">全选</button><button id="identitySelectNone" type="button">取消选择</button></div></div>
+      <div id="identityBindingRows" class="identity-binding-rows">${rows.map(row => `<label class="identity-binding-row" data-binding-row="${escAttr(row.binding_id)}"><input type="checkbox" value="${escAttr(row.binding_id)}"><span><strong>${esc(row.connection_name || `连接 ${row.binding_id}`)}</strong><small>${esc(row.ssh_user || "")}@${esc(row.ssh_host || "")}:${esc(row.ssh_port || 22)}</small></span><span><small>原验证方式</small><code>${esc(originalCredential(row))}</code></span><span class="identity-binding-result" data-binding-result="${escAttr(row.binding_id)}"></span></label>`).join("") || `<div class="restore-credential-empty">该数据库没有 SSH 连接，可直接继续恢复。</div>`}</div>
+      <div id="restoreKeyStatus" class="restore-key-status" role="status" aria-live="polite">${options.password_replacement_allowed === false ? "加密迁移包恢复前不能改写密码；恢复并解锁后可在连接设置中修改。" : "请选择连接后绑定私钥或设置密码，也可保留当前提示状态继续恢复。"}</div>
+      <div class="actions credential-binding-actions"><button id="restoreKeyCancel">取消</button><button id="identityBindingTest" type="button">测试选中连接</button><button id="credentialClearSelected" type="button">清除选中凭据</button><button id="identityBindingStage" type="button">绑定所选私钥</button><button id="credentialPasswordStage" type="button" ${options.password_replacement_allowed === false ? "disabled" : ""}>设置所填密码</button><button id="identityBindingFinish" class="primary" type="button">继续恢复</button></div>
+    </div>`;
+    modal.hidden = false;
+    const status = $("restoreKeyStatus");
+    const candidateSelect = $("identityBindingCandidate");
+    const passwordInput = $("credentialPassword");
+    const selectedRows = () => [...modal.querySelectorAll("#identityBindingRows input:checked")].map(input => rows.find(row => row.binding_id === input.value)).filter(Boolean);
+    const currentCandidate = () => identityInfo.items.find(item => item.path === candidateSelect.value);
+    const finish = result => {
+      modal.hidden = true;
+      modal.onclick = null;
+      modal.innerHTML = "";
+      resolve(result);
+    };
+    const setStatus = (text, type="") => {
+      status.className = `restore-key-status ${type}`.trim();
+      status.textContent = text;
+    };
+    const bindingLabel = row => {
+      const binding = staged.get(row.binding_id);
+      if (binding?.auth_type === "key") return `将绑定：${identityDisplayName(binding.identity_path)}`;
+      if (binding?.password_action === "replace") return "将使用新密码";
+      if (binding?.password_action === "preserve") return row.password_encrypted ? "保留备份中的加密密码" : "保留备份密码";
+      if (binding?.password_action === "clear") return "密码未设置";
+      if (row.identity_encrypted) return "保留加密私钥路径";
+      return "私钥未绑定";
+    };
+    const renderBindings = () => rows.forEach(row => {
+      const result = modal.querySelector(`[data-binding-result="${CSS.escape(row.binding_id)}"]`);
+      if (!result) return;
+      const binding = staged.get(row.binding_id);
+      result.textContent = bindingLabel(row);
+      result.className = `identity-binding-result ${binding?.identity_path || binding?.password_action === "replace" || binding?.password_action === "preserve" || row.identity_encrypted ? "success" : ""}`;
+    });
+    const requireRows = () => {
+      const selected = selectedRows();
+      if (!selected.length) throw new Error("请勾选至少一个连接");
+      return selected;
+    };
+    const refreshCandidates = (selectedPath="") => {
+      candidateSelect.replaceChildren(new Option("选择私钥", ""), ...identityInfo.items.map(item => new Option(`${item.name} · ${item.source_label}`, String(item.path || ""))));
+      if (selectedPath) candidateSelect.value = selectedPath;
+      $("identityBindingDirectory").textContent = identityInfo.upload_directory ? `上传目标目录：${identityInfo.upload_directory}` : "上传后会保存到当前设置使用的密钥目录。";
+    };
+    renderBindings();
+    $("identityBindingUploadBtn").onclick = async () => {
+      const file = $("identityBindingUpload").files?.[0];
+      if (!file) return setStatus("请选择要上传的私钥", "error");
+      try {
+        setStatus(`正在上传 ${file.name}...`, "busy");
+        const uploaded = await uploadOneKey(file);
+        identityInfo = await loadIdentityBindingOptions();
+        refreshCandidates(uploaded.path);
+        setStatus(`已上传 ${uploaded.label}，可应用到选中连接。`, "success");
+      } catch (error) { setStatus(`上传失败：${error.message || "未知错误"}`, "error"); }
+    };
+    $("identitySelectMatching").onclick = () => {
+      const candidate = currentCandidate();
+      if (!candidate) return setStatus("请先选择一把私钥", "error");
+      modal.querySelectorAll("#identityBindingRows input").forEach(input => {
+        const row = rows.find(item => item.binding_id === input.value);
+        input.checked = row?.original_auth_type === "key" && row.key_name === candidate.name;
+      });
+    };
+    $("identitySelectAll").onclick = () => modal.querySelectorAll("#identityBindingRows input").forEach(input => { input.checked = true; });
+    $("identitySelectNone").onclick = () => modal.querySelectorAll("#identityBindingRows input").forEach(input => { input.checked = false; });
+    $("identityBindingStage").onclick = () => {
+      try {
+        const candidate = currentCandidate();
+        if (!candidate) throw new Error("请先选择或上传一把私钥");
+        const selected = requireRows();
+        selected.forEach(row => staged.set(row.binding_id, {connection_id:Number(row.connection_id), auth_type:"key", identity_path:candidate.path}));
+        renderBindings();
+        setStatus(`已为 ${selected.length} 个连接暂存私钥绑定。`, "success");
+      } catch (error) { setStatus(error.message, "error"); }
+    };
+    $("credentialPasswordStage").onclick = () => {
+      try {
+        const password = passwordInput.value;
+        if (!password) throw new Error("请先输入新 SSH 密码");
+        const selected = requireRows();
+        selected.forEach(row => staged.set(row.binding_id, {connection_id:Number(row.connection_id), auth_type:"password", password_action:"replace", password}));
+        passwordInput.value = "";
+        renderBindings();
+        setStatus(`已为 ${selected.length} 个连接暂存新密码。`, "success");
+      } catch (error) { setStatus(error.message, "error"); }
+    };
+    $("credentialClearSelected").onclick = () => {
+      try {
+        const selected = requireRows();
+        selected.forEach(row => {
+          const current = staged.get(row.binding_id);
+          if (current?.auth_type === "password" || row.original_auth_type === "password") staged.set(row.binding_id, {connection_id:Number(row.connection_id), auth_type:"password", password_action:"clear"});
+          else staged.delete(row.binding_id);
+        });
+        renderBindings();
+        setStatus(`已清除 ${selected.length} 个连接暂存的凭据。`, "success");
+      } catch (error) { setStatus(error.message, "error"); }
+    };
+    $("identityBindingTest").onclick = async () => {
+      try {
+        const selected = requireRows();
+        const tunnels = selected.map(row => {
+          const binding = staged.get(row.binding_id);
+          if (binding?.auth_type === "key" && binding.identity_path) return {...row, auth_type:"key", identity_file:binding.identity_path, ssh_password:"", missing_identity:false};
+          if (binding?.auth_type === "password" && binding.password_action === "replace") return {...row, auth_type:"password", identity_file:"", ssh_password:binding.password, missing_identity:false};
+          throw new Error(`连接 ${row.connection_name} 需要先暂存可测试的新私钥或新密码`);
+        });
+        setStatus(`正在测试 ${tunnels.length} 个连接...`, "busy");
+        const response = await api("/api/import/test", {method:"POST", body:JSON.stringify({tunnels})});
+        response.results.forEach((result, index) => {
+          const target = modal.querySelector(`[data-binding-result="${CSS.escape(selected[index].binding_id)}"]`);
+          target.textContent = result.ok ? "测试成功" : `测试失败：${result.output || "连接失败"}`;
+          target.className = `identity-binding-result ${result.ok ? "success" : "error"}`;
+        });
+        setStatus(`测试完成：成功 ${response.ok} 个，失败 ${response.failed} 个。`, response.failed ? "error" : "success");
+      } catch (error) { setStatus(error.message, "error"); }
+    };
+    $("identityBindingFinish").onclick = () => finish([...staged.values()]);
+    $("restoreKeyCancel").onclick = () => finish(null);
+    $("restoreKeyClose").onclick = () => finish(null);
+    modal.onclick = event => { if (event.target === modal) finish(null); };
+    loadIdentityBindingOptions().then(info => { identityInfo=info; refreshCandidates(); }).catch(error => setStatus(error.message || "私钥列表加载失败", "error"));
+  });
+}
+
 async function bindImportIdentities() {
   const items = (importState.tunnels || []).map((tunnel, index) => ({...tunnel, binding_id:String(index), connection_id:index + 1})).filter(item => item.identity_name);
   if (!items.length) return notify("当前 SSH config 没有引用私钥", "success");
@@ -352,12 +516,12 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
-function databaseRestoreRequest(buffer, bindings=[]) {
-  return JSON.stringify({type:"tunneldesk-restore-request-v1", payload_base64:arrayBufferToBase64(buffer), identity_bindings:bindings});
+function databaseRestoreRequest(buffer, credentialBindings=[]) {
+  return JSON.stringify({type:"tunneldesk-restore-request-v1", payload_base64:arrayBufferToBase64(buffer), credential_bindings:credentialBindings});
 }
 
-async function inspectDatabaseBackup(buffer, bindings=[]) {
-  const response = await fetch("/api/restore/database/check", {method:"POST", headers:{"Content-Type":"application/json"}, body:databaseRestoreRequest(buffer, bindings)});
+async function inspectDatabaseBackup(buffer, credentialBindings=[]) {
+  const response = await fetch("/api/restore/database/check", {method:"POST", headers:{"Content-Type":"application/json"}, body:databaseRestoreRequest(buffer, credentialBindings)});
   const result = await response.json().catch(()=>({error:"数据库检查失败"}));
   if (!response.ok) throw new Error(result.error || "数据库检查失败");
   return result;
@@ -367,25 +531,29 @@ async function restoreDatabaseBackup() {
   const file = $("db_restore_upload")?.files?.[0];
   if (!file) return notify("请选择数据库备份文件", "error");
   const buffer = await file.arrayBuffer();
-  let identityBindings = [];
+  let credentialBindings = [];
   let check;
   try {
-    check = await inspectDatabaseBackup(buffer, identityBindings);
-    if (check.missing_identities?.length) {
-      const rows = check.unresolved_identities?.length ? check.unresolved_identities : check.missing_identities;
-      const selected = await showIdentityBindingModal(rows, {subtitle:"可为待恢复连接重新绑定私钥；未绑定连接将清除旧路径并继续恢复。", upload_directory:check.upload_directory, finish_label:"继续恢复"});
-      if (!selected) return;
-      identityBindings = [...identityBindings, ...selected.map(item => ({connection_id:item.connection_id, identity_path:item.identity_path}))];
-      check = await inspectDatabaseBackup(buffer, identityBindings);
-    }
+    check = await inspectDatabaseBackup(buffer, credentialBindings);
+    const selected = await showDatabaseCredentialModal(check.connections || [], {
+      subtitle:"请确认每个连接原来的验证方式；可重新绑定私钥、保留备份密码或设置新密码。",
+      upload_directory:check.upload_directory,
+      password_replacement_allowed:check.password_replacement_allowed
+    });
+    if (!selected) return;
+    credentialBindings = selected;
+    check = await inspectDatabaseBackup(buffer, credentialBindings);
   } catch (error) {
     return notify(error.message || "数据库检查失败", "error");
   }
   const encryptedText = check.encrypted_bundle ? "\n\n该备份包含配置加密元数据，恢复后需要使用原主密码解锁加密配置。" : "";
+  const encryptedWithoutMetadata = !check.encrypted_bundle && (check.connections || []).some(item => item.identity_encrypted || item.password_encrypted)
+    ? "\n\n检测到已加密凭据，但普通 .db 不包含解锁元数据；跨设备恢复应改用原设备导出的加密迁移包。"
+    : "";
   const unboundCount = check.unresolved_identities?.length || 0;
   const unboundText = unboundCount ? `\n\n${unboundCount} 个连接将不绑定私钥，旧机器上的私钥路径会被清除；之后可在连接设置中补充。` : "";
-  if (!await confirmModal(`恢复数据库会覆盖当前连接配置，建议先下载备份。继续？${unboundText}${encryptedText}`, "恢复数据库", "继续恢复", "取消", true)) return;
-  const res = await fetch("/api/restore/database", {method:"POST", headers:{"Content-Type":"application/json"}, body:databaseRestoreRequest(buffer, identityBindings)});
+  if (!await confirmModal(`恢复数据库会覆盖当前连接配置，建议先下载备份。继续？${unboundText}${encryptedText}${encryptedWithoutMetadata}`, "恢复数据库", "继续恢复", "取消", true)) return;
+  const res = await fetch("/api/restore/database", {method:"POST", headers:{"Content-Type":"application/json"}, body:databaseRestoreRequest(buffer, credentialBindings)});
   const body = await res.json().catch(()=>({error:"恢复失败"}));
   if (!res.ok) return notify(body.error || "恢复失败", "error");
   const restoredUnbound = body.unresolved_identities?.length || 0;

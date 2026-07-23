@@ -375,6 +375,11 @@ function resetConnectionForm(){
   $("conn_password").value="";
   $("conn_tags").value="";
   $("conn_autostart").value="0";
+  if ($("connTestStatus")) {
+    $("connTestStatus").hidden = true;
+    $("connTestStatus").textContent = "";
+    $("connTestStatus").className = "connection-test-status";
+  }
   $("conn_extra").value=`-o StrictHostKeyChecking=accept-new
 -o ServerAliveInterval=60
 -o ServerAliveCountMax=3
@@ -474,11 +479,23 @@ async function repairSelectedKey() {
   }
 }
 
-async function testConnectionForm(){
+async function testConnectionForm(button=null){
+  button = button || $("connTestBtn");
+  const status = $("connTestStatus");
+  setButtonBusy(button, true, "测试中...");
+  if (status) { status.hidden = false; status.className = "connection-test-status busy"; status.textContent = "正在测试 SSH 连接，请稍候..."; }
+  notify("正在测试 SSH 连接，请稍候...", "info");
   try {
     const r=await api("/api/test-ssh",{method:"POST",body:JSON.stringify(connPayload())});
-    notify(r.ok?`SSH 测试成功，用时 ${r.elapsed_ms}ms`:`SSH 测试失败：\n${r.output}`, r.ok?"success":"error");
-  } catch(e){notify(e.message,"error");}
+    const message = r.ok ? `SSH 测试成功，用时 ${r.elapsed_ms}ms` : `SSH 测试失败：${r.output}`;
+    if (status) { status.className = `connection-test-status ${r.ok ? "success" : "error"}`; status.textContent = message; }
+    notify(message, r.ok?"success":"error");
+  } catch(e){
+    const message = `SSH 测试无法完成：${e.message}`;
+    if (status) { status.className = "connection-test-status error"; status.textContent = message; }
+    notify(message,"error");
+  }
+  finally { setButtonBusy(button, false); }
 }
 
 async function checkConnectionHealth(id, button=null) {

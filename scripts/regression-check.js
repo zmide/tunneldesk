@@ -256,6 +256,7 @@ async function main() {
   ok("批量命令提供 TXT/JSON 导出", frontend.includes("导出 TXT") && frontend.includes("导出 JSON"));
   ok("SSH 连接支持批量选择、设置与删除", frontend.includes("toggleConnectionBulkMode") && frontend.includes("openConnectionBulkSettings") && frontend.includes("/api/connections/bulk-update") && frontend.includes("performBulkDeleteConnections"));
   ok("新增 SSH 连接支持保存并清空", indexHtml.includes('id="connSaveAndClear"') && indexHtml.includes("保存并清空") && indexHtml.includes("saveConnectionForm(true,this)") && frontend.includes("表单已清空") && frontend.includes('$("connSaveAndClear").hidden = true'));
+  ok("SSH 测试失败保持在页面内且按钮测试期间禁用", indexHtml.includes('id="connTestBtn"') && indexHtml.includes('id="connTestStatus"') && indexHtml.includes("testConnectionForm(this)") && frontend.includes('setButtonBusy(button, true, "测试中...")') && frontend.includes("SSH 测试无法完成") && read("src/ssh2-client.ts").includes("if (!settled) finish(error)") && read("src/ssh2-client.ts").includes('client.on("error", onError)') && read("src/ssh2-client.ts").includes('client.on("error", reportError)') && read("src/ssh2-client.ts").includes('child.on("error", () => {})'));
   ok("SSH 批量设置仅允许分组、端口和登录凭据", read("src/db.ts").includes("function bulkUpdateConnections") && read("src/db.ts").includes('changes, "group_name"') && read("src/db.ts").includes('changes, "ssh_port"') && read("src/server.ts").includes("所选私钥不在允许的密钥目录中"));
   ok("转发列表全选同步全选与半选状态", frontend.includes('id="forwardSelectAll"') && frontend.includes("selectAll.indeterminate") && frontend.includes("全选转发"));
 

@@ -53,16 +53,17 @@ function connectSsh(connection) {
       if (settled) return;
       settled = true;
       client.removeListener("ready", onReady);
-      client.removeListener("error", onError);
       if (error) {
         try { client.end(); } catch {}
         reject(error);
       } else resolve(client);
     };
     const onReady = () => finish();
-    const onError = (error) => finish(error);
+    const onError = (error) => {
+      if (!settled) finish(error);
+    };
     client.once("ready", onReady);
-    client.once("error", onError);
+    client.on("error", onError);
     if (isPasswordConnection(connection)) {
       client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, complete) => {
         const password = String(connection.ssh_password || "");
@@ -91,6 +92,8 @@ function spawnPasswordCommand(connection, command) {
   child.client = null;
   child.channel = null;
   let closed = false;
+  let firstError = null;
+  child.on("error", () => {});
 
   const close = (code = null, signal = null) => {
     if (closed) return;
@@ -100,6 +103,16 @@ function spawnPasswordCommand(connection, command) {
     try { child.stderr.end(); } catch {}
     try { child.client?.end(); } catch {}
     child.emit("close", code, signal);
+  };
+
+  const reportError = (error) => {
+    if (!firstError) {
+      firstError = error;
+      child.emit("error", error);
+    }
+    try { child.channel?.close(); } catch {}
+    try { child.client?.end(); } catch {}
+    close(null);
   };
 
   child.kill = (signal = "SIGTERM") => {
@@ -114,24 +127,22 @@ function spawnPasswordCommand(connection, command) {
     try {
       const client: any = await connectPassword(connection);
       child.client = client;
-      client.once("error", (error) => child.emit("error", error));
+      client.on("error", reportError);
       client.once("close", () => close(child.killed ? null : 255, child.killed ? "SIGTERM" : null));
       client.exec(String(command || ""), (error, channel) => {
         if (error) {
-          child.emit("error", error);
-          close(null);
+          reportError(error);
           return;
         }
         child.channel = channel;
         child.stdin.pipe(channel);
         channel.pipe(child.stdout);
         channel.stderr?.pipe(child.stderr);
-        channel.once("error", (streamError) => child.emit("error", streamError));
+        channel.on("error", reportError);
         channel.once("close", (code, signal) => close(code, signal));
       });
     } catch (error) {
-      child.emit("error", error);
-      close(null);
+      reportError(error);
     }
   });
   return child;
@@ -144,8 +155,8 @@ function runPasswordCommand(connection, command, input = null, timeoutMs = 60000
     const stderr: any[] = [];
     let settled = false;
     const timer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
       finish(null, new Error("SSH 命令执行超时"));
+      try { child.kill("SIGKILL"); } catch {}
     }, timeoutMs);
     const finish = (status, error = null) => {
       if (settled) return;
@@ -155,7 +166,7 @@ function runPasswordCommand(connection, command, input = null, timeoutMs = 60000
     };
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.once("error", (error) => finish(null, error));
+    child.on("error", (error) => finish(null, error));
     child.once("close", (code) => finish(code));
     if (input) child.stdin.end(input);
     else child.stdin.end();

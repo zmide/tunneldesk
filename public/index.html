@@ -127,9 +127,10 @@
       <div class="actions">
         <button class="primary" type="submit">保存连接</button>
         <button id="connSaveAndClear" type="button" onclick="saveConnectionForm(true,this)">保存并清空</button>
-        <button type="button" onclick="testConnectionForm()">测试 SSH</button>
+        <button id="connTestBtn" type="button" onclick="testConnectionForm(this)">测试 SSH</button>
         <button type="button" onclick="resetConnectionForm()">清空</button>
       </div>
+      <div id="connTestStatus" class="connection-test-status" hidden aria-live="polite"></div>
     </form>
   </div>
 </template>

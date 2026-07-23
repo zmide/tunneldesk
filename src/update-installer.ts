@@ -35,6 +35,12 @@ export interface UpdateDownloadState {
   package_type?: string;
 }
 
+export interface UpdateCleanupResult {
+  matched: boolean;
+  removed: boolean;
+  retry: boolean;
+}
+
 interface UpdateInstallerOptions {
   fetch?: typeof fetch;
   platform?: NodeJS.Platform;
@@ -227,6 +233,49 @@ export class UpdateInstaller {
     const actual = hash.digest("hex");
     if (actual !== expected) throw new Error("更新安装包校验失败，文件可能已被修改");
     return state;
+  }
+
+  cleanupInstalledPackage(currentVersion: string): UpdateCleanupResult {
+    const state = readState(this.stateFile);
+    const normalizedCurrentVersion = String(currentVersion || "").trim().replace(/^v/i, "");
+    const normalizedDownloadedVersion = String(state.version || "").trim().replace(/^v/i, "");
+    const matched = this.platform === "win32"
+      && this.windowsPackageType === "installer"
+      && state.state === "downloaded"
+      && state.package_type === "installer"
+      && Boolean(normalizedCurrentVersion)
+      && normalizedDownloadedVersion === normalizedCurrentVersion;
+    if (!matched) return { matched: false, removed: false, retry: false };
+
+    const root = path.resolve(this.directory);
+    const resolved = path.resolve(String(state.file || ""));
+    const relative = path.relative(root, resolved);
+    if (!state.file || !relative || relative.startsWith("..") || path.isAbsolute(relative) || !/\.exe$/i.test(resolved)) {
+      const cleared = writeState(this.stateFile, {
+        schema_version: 1,
+        state: "idle",
+        platform: this.platform,
+        arch: this.arch,
+        package_type: this.windowsPackageType
+      });
+      this.liveState = cleared;
+      return { matched: true, removed: false, retry: false };
+    }
+
+    try {
+      fs.rmSync(resolved, { force: true });
+      const cleared = writeState(this.stateFile, {
+        schema_version: 1,
+        state: "idle",
+        platform: this.platform,
+        arch: this.arch,
+        package_type: this.windowsPackageType
+      });
+      this.liveState = cleared;
+      return { matched: true, removed: true, retry: false };
+    } catch {
+      return { matched: true, removed: false, retry: true };
+    }
   }
 
   private async performDownload(release: UpdateRelease): Promise<UpdateDownloadState> {

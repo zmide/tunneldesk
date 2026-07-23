@@ -90,6 +90,41 @@ async function main() {
     await assert.rejects(() => portableUsingSameData.verifyDownloaded(currentRelease), /没有已下载/);
     assert.equal(installer.status(currentRelease).state, "downloaded");
     assert.equal((await installer.verifyDownloaded(currentRelease)).package_type, "installer");
+
+    const cleanupRoot = path.join(root, "cleanup");
+    const cleanupInstaller = new UpdateInstaller(cleanupRoot, {
+      platform: "win32",
+      arch: "x64",
+      windowsPackageType: "installer",
+      fetch: async () => ({ ok:true, status:200, body:Readable.from(body) })
+    });
+    const cleanupDownload = await cleanupInstaller.download(release(asset));
+    assert.deepEqual(
+      cleanupInstaller.cleanupInstalledPackage("1.1.9"),
+      { matched:false, removed:false, retry:false }
+    );
+    assert.equal(fs.existsSync(cleanupDownload.file), true);
+    assert.deepEqual(
+      cleanupInstaller.cleanupInstalledPackage("v1.2.0"),
+      { matched:true, removed:true, retry:false }
+    );
+    assert.equal(fs.existsSync(cleanupDownload.file), false);
+    assert.equal(cleanupInstaller.status().state, "idle");
+
+    const portableCleanupRoot = path.join(root, "portable-cleanup");
+    const portableCleanup = new UpdateInstaller(portableCleanupRoot, {
+      platform: "win32",
+      arch: "x64",
+      windowsPackageType: "portable",
+      fetch: async () => ({ ok:true, status:200, body:Readable.from(body) })
+    });
+    const portableCleanupDownload = await portableCleanup.download(release(portableAsset));
+    assert.deepEqual(
+      portableCleanup.cleanupInstalledPackage("1.2.0"),
+      { matched:false, removed:false, retry:false }
+    );
+    assert.equal(fs.existsSync(portableCleanupDownload.file), true);
+
     fs.appendFileSync(downloaded.file, "tampered");
     await assert.rejects(() => installer.verifyDownloaded(), /校验失败/);
 
@@ -109,7 +144,7 @@ async function main() {
 
     const untrusted = new UpdateInstaller(path.join(root, "untrusted"), { platform:"win32", arch:"x64" });
     await assert.rejects(() => untrusted.download(release({...asset, url:"https://example.invalid/update.exe"})), /不是受信任/);
-    console.log("更新安装包检查通过：平台/架构/便携类型选包、跨运行形态状态隔离、进度状态、GitHub HTTPS、大小与 SHA-256 校验、篡改拒绝");
+    console.log("更新安装包检查通过：平台/架构/便携类型选包、跨运行形态状态隔离、安装版升级后清理、便携版保留、进度状态、GitHub HTTPS、大小与 SHA-256 校验、篡改拒绝");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

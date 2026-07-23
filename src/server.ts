@@ -120,6 +120,7 @@ const {
 } = require("./runtime-settings");
 
 const PACKAGE_ROOT = path.resolve(PUBLIC_DIR, "..");
+const PACKAGE_VERSION = String(JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8")).version || "");
 const STARTUP_STATUS_FILE = path.join(DATA_DIR, "startup-status.json");
 let startupStatus: any = { state:"starting", started_at:Date.now(), local_url:"", lan_urls:[], autostart:{ok:0,failed:0,errors:[]}, restore:{ok:0,failed:0,errors:[]} };
 const databaseTransferStore = new DatabaseTransferStore(DATA_DIR);
@@ -1356,9 +1357,26 @@ let exitOnShutdown = true;
 let onShutdown: null | (() => any) = null;
 let desktopIntegration: any = null;
 let updateCheckTimer = null;
+let installedUpdateCleanupTimer = null;
 let startupTaskTimer = null;
 let startupEffectsStarted = false;
 let shutdownPromise: Promise<any> | null = null;
+
+function scheduleInstalledUpdateCleanup(attempt = 0) {
+  clearTimeout(installedUpdateCleanupTimer);
+  installedUpdateCleanupTimer = null;
+  if (!desktopIntegration || process.platform !== "win32") return;
+  installedUpdateCleanupTimer = setTimeout(() => {
+    installedUpdateCleanupTimer = null;
+    const result = updateInstaller.cleanupInstalledPackage(PACKAGE_VERSION);
+    if (result.removed) {
+      appendSystemLog("安装版升级完成，已自动清理下载的更新安装包");
+      return;
+    }
+    if (result.retry && attempt < 11) scheduleInstalledUpdateCleanup(attempt + 1);
+  }, attempt === 0 ? 1500 : 5000);
+  installedUpdateCleanupTimer.unref?.();
+}
 
 function listenOne(listener, host, port) {
   return new Promise((resolve, reject) => {
@@ -1677,6 +1695,8 @@ async function shutdown() {
   shutdownPromise = (async () => {
     clearTimeout(updateCheckTimer);
     updateCheckTimer = null;
+    clearTimeout(installedUpdateCleanupTimer);
+    installedUpdateCleanupTimer = null;
     clearTimeout(startupTaskTimer);
     startupTaskTimer = null;
     try {
@@ -1709,6 +1729,7 @@ function startServer(customArgs: any = parseArgs(), options: any = {}) {
   startupEffectsStarted = false;
   shutdownPromise = null;
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  scheduleInstalledUpdateCleanup();
   if (process.env.TUNNELDESK_RESET_WEB_ACCESS === "1") {
     resetWebAccessSecurity();
     appendSystemLog("已根据 TUNNELDESK_RESET_WEB_ACCESS 重置 Web 访问密码和 Token");

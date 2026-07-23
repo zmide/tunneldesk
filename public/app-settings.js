@@ -929,7 +929,7 @@ async function openDownloadedUpdate() {
     return openDownloadedUpdateDirectory();
   }
   if (!await confirmModal(
-    "将交给系统打开已校验的安装包。安装程序会处理正在运行的旧版本；如果需要手动操作，也可以取消后选择“打开下载目录”。继续？",
+    "将交给系统打开已校验的安装包。安装程序会处理正在运行的旧版本；安装完成并启动新版本后，下载的安装包会自动删除。如果需要手动操作，也可以取消后选择“打开下载目录”。继续？",
     "打开更新安装包",
     "打开安装包",
     "取消"

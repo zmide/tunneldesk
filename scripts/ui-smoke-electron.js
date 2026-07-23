@@ -60,6 +60,10 @@ app.whenReady().then(async () => {
       };
     });
     const baseline = activityItems[0]?.itemCenter;
+    const groupActionButton = document.querySelector('.connection-group-menu-button');
+    document.querySelector('.group-head')?.dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, cancelable:true, clientX:180, clientY:180}));
+    const groupMenuLabels = [...document.querySelectorAll('#actionMenu button span')].map(node => node.textContent.trim());
+    hideActionMenu();
     return {
       title: document.title,
       icons: document.querySelectorAll('svg.lucide').length,
@@ -69,6 +73,8 @@ app.whenReady().then(async () => {
       width: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
       visibleView: Array.from(document.querySelectorAll('.view')).find(el => !el.hidden)?.id || '',
+      groupRenameMenu: groupMenuLabels.includes('重命名分组'),
+      groupActionButton: Boolean(groupActionButton && groupActionButton.getAttribute('aria-label')?.includes('分组操作')),
       activity: {
         count: activityItems.length,
         iconCentered: activityItems.every(item => item.iconDelta <= 0.5),
@@ -501,17 +507,41 @@ app.whenReady().then(async () => {
     const first = connections[0];
     if (!first) return {found:false};
     const key = 'terminal-ui-smoke';
+    let binaryWrite = false;
     const fakeTerm = {
       hasSelection:()=>true,
       getSelection:()=> 'selected text',
-      selectAll:()=>{}, clear:()=>{}, focus:()=>{}, scrollToBottom:()=>{},
-      options:{fontSize:13}, buffer:{active:{length:0}}
+      selectAll:()=>{}, clear:()=>{}, focus:()=>{}, scrollToBottom:()=>{}, writeln:()=>{},
+      write:data=>{ binaryWrite = data instanceof Uint8Array && data[0]===0xff && data[1]===0xfe; },
+      onData:()=>({dispose:()=>{}}), onResize:()=>({dispose:()=>{}}),
+      cols:80, rows:24, options:{fontSize:13}, buffer:{active:{length:0}}
     };
     terminalSessions.set(key,{term:fakeTerm,fit:{fit:()=>{}},id:first.id});
+    const OriginalWebSocket = window.WebSocket;
+    class FakeWebSocket extends EventTarget {
+      static OPEN = 1;
+      constructor(){ super(); this.readyState=1; this.binaryType='blob'; }
+      send(){}
+      close(){}
+    }
+    window.WebSocket = FakeWebSocket;
+    connectTerminal(first,key);
+    const fakeSocket = terminalSessions.get(key).socket;
+    fakeSocket.dispatchEvent(new MessageEvent('message',{data:new Uint8Array([0xff,0xfe]).buffer}));
+    const binaryType = fakeSocket.binaryType;
+    window.WebSocket = OriginalWebSocket;
     document.querySelector('#view-terminal').innerHTML='<div id="terminalMount" class="terminal-box"></div>';
     setWorkspace('终端测试','UI','terminal',key,false,true,{kind:'terminal',id:first.id});
     const mount=document.querySelector('#terminalMount');
     mount.dataset.contextMenuBound='1';
+    showTerminalEncodingMenu(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:160,clientY:100}),key,first.id);
+    const encodingLabels=[...document.querySelectorAll('#actionMenu button span')].map(item=>item.textContent.trim());
+    const encodingMenuOpened=['UTF-8','GB18030','GBK','Big5','Shift_JIS','EUC-KR','ISO-8859-1'].every(label=>encodingLabels.includes(label));
+    hideActionMenu();
+    showTerminalFontMenu(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:180,clientY:100}),key,first.id);
+    const fontLabels=[...document.querySelectorAll('#actionMenu button span')].map(item=>item.textContent.trim());
+    const fontMenuOpened=['系统等宽','Cascadia','JetBrains Mono','Consolas','自定义字体…'].every(label=>fontLabels.includes(label));
+    hideActionMenu();
     mount.addEventListener('contextmenu',event=>showTerminalContextMenu(event,key,first.id),{capture:true});
     mount.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:120,clientY:120}));
     const labels=Array.from(document.querySelectorAll('#actionMenu button span')).map(el=>el.textContent.trim());
@@ -529,7 +559,7 @@ app.whenReady().then(async () => {
     backFixture.remove();
     hideActionMenu();
     terminalSessions.delete(key);
-    return {found:true,labels,metrics,desktopBackHidden};
+    return {found:true,labels,metrics,desktopBackHidden,binaryType,binaryWrite,encodingMenuOpened,fontMenuOpened};
   })()`);
   console.log("[ui-smoke] SFTP views");
   const sftpUi = await window.webContents.executeJavaScript(`(async () => {
@@ -574,6 +604,20 @@ app.whenReady().then(async () => {
       const moveQueueVisible = clipboardActions.textContent.includes('移动队列 1 项') && Boolean(movePaste && !movePaste.disabled && moveCancel);
       moveCancel?.click();
       const moveCancelled = sftpClipboard === null && !clipboardActions.querySelector('button');
+      sftpClipboard = {mode:'copy', paths:['/source/cross.txt'], connectionId:999999, connectionName:'另一台主机'};
+      refreshSftpDirectoryActions();
+      const crossCopyButton = [...clipboardActions.querySelectorAll('button')].find(button => button.textContent.includes('跨主机复制'));
+      const crossHostCopyEnabled = Boolean(crossCopyButton && !crossCopyButton.disabled);
+      sftpClipboard = {mode:'move', paths:['/source/cross.txt'], connectionId:999999, connectionName:'另一台主机'};
+      refreshSftpDirectoryActions();
+      const crossHostMoveDisabled = Boolean([...clipboardActions.querySelectorAll('button')].find(button => button.disabled));
+      sftpClipboard = null;
+      refreshSftpDirectoryActions();
+      const filenameEncodingButton = view.querySelector('#sftpFilenameEncodingButton');
+      filenameEncodingButton?.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:160,clientY:100}));
+      const filenameEncodingLabels = [...document.querySelectorAll('#actionMenu button span')].map(item=>item.textContent.trim());
+      const filenameEncodingMenu = ['UTF-8','GB18030','GBK','Big5','Shift_JIS','EUC-KR','ISO-8859-1'].every(label=>filenameEncodingLabels.includes(label));
+      hideActionMenu();
 
       directoryActionsUi = {
         found:Boolean(stickyTop && breadcrumb && directoryBar),
@@ -585,7 +629,11 @@ app.whenReady().then(async () => {
         copyQueueVisible,
         copyCancelled,
         moveQueueVisible,
-        moveCancelled
+        moveCancelled,
+        crossHostCopyEnabled,
+        crossHostMoveDisabled,
+        filenameEncodingMenu,
+        terminalJump:Boolean(view.querySelector('button[title="打开此连接的终端"]'))
       };
     } finally {
       loadSftpPage = previousLoadSftpPage;
@@ -722,6 +770,17 @@ app.whenReady().then(async () => {
       sftpLatestJobs = previousLatestJobs;
       jobFixture.remove();
     }
+    const editorPromise = sftpTextModal('/tmp/gbk.txt', '中文内容', 8, 512*1024, 'gbk', 'auto');
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const textEncodingUi={
+      opened:Boolean(document.querySelector('.sftp-editor-modal')),
+      selected:document.querySelector('#sftpTextEncoding')?.value||'',
+      options:[...document.querySelectorAll('#sftpTextEncoding option')].map(option=>option.value),
+      persistDefault:Boolean(document.querySelector('#sftpPersistEncoding')),
+      backup:Boolean(document.querySelector('#sftpBackupBeforeSave')?.checked)
+    };
+    document.querySelector('#sftpTextClose')?.click();
+    await editorPromise;
     const result = {
       folderOpened: actions[0]?.kind === 'dir' && actions[0]?.path === '/fixture/folder',
       fileOpened: actions[1]?.kind === 'file' && actions[1]?.path === '/fixture/' + specialName,
@@ -762,6 +821,7 @@ app.whenReady().then(async () => {
       narrowMetaVisible,
       narrowAccessHidden,
       completedMutationDetected,
+      textEncodingUi,
       jobUi,
       pageRows:rows.length,
       pagerVisible:Boolean(document.querySelector('#view-sftp .sftp-pager')),
@@ -826,6 +886,23 @@ app.whenReady().then(async () => {
   window.setContentSize(390, 844);
   await new Promise(resolve => setTimeout(resolve, 400));
   const mobile = await window.webContents.executeJavaScript(`(async()=>{
+    const mobileSftpLoad = loadSftpPage;
+    const mobileSftpJobs = refreshSftpJobs;
+    const mobileSftpTimer = startSftpJobsTimer;
+    loadSftpPage = async () => true;
+    refreshSftpJobs = async () => {};
+    startSftpJobsTimer = () => {};
+    await openSftp(connections[0].id, '.', false);
+    const mobileSftpActions = document.querySelector('.sftp-top-actions');
+    const mobileSftpLayout = {
+      found:Boolean(mobileSftpActions),
+      fits:Boolean(mobileSftpActions && mobileSftpActions.scrollWidth <= mobileSftpActions.clientWidth + 0.5),
+      encodingVisible:Boolean(document.querySelector('#sftpFilenameEncodingButton')?.getBoundingClientRect().width),
+      terminalJumpVisible:Boolean(document.querySelector('.sftp-top-actions button[title="打开此连接的终端"]')?.getBoundingClientRect().width)
+    };
+    loadSftpPage = mobileSftpLoad;
+    refreshSftpJobs = mobileSftpJobs;
+    startSftpJobsTimer = mobileSftpTimer;
     showPrimary('import');
     await new Promise(resolve=>setTimeout(resolve,80));
     const leftPane=document.querySelector('.left-pane');
@@ -841,7 +918,8 @@ app.whenReady().then(async () => {
       contentVisible:getComputedStyle(content).display,
       active:document.querySelector('.mobile-tabs .active')?.getAttribute('aria-label')||'',
       importExplorerFirst,
-      importWorkspaceEntered:leftPane?.classList.contains('mobile-hide')&&content?.classList.contains('mobile-show')
+      importWorkspaceEntered:leftPane?.classList.contains('mobile-hide')&&content?.classList.contains('mobile-show'),
+      sftp:mobileSftpLayout
     };
     const mobileTabs=document.querySelector('.mobile-tabs');
     const mobileTabItems=[...mobileTabs.querySelectorAll('button, a')];
@@ -894,6 +972,29 @@ app.whenReady().then(async () => {
     layout.about.closed=Boolean(modal?.hidden&&!modal.querySelector('.license-modal'));
     showPrimary('connections');
     if(!document.querySelector('.conn-row'))document.querySelector('.group-head')?.click();
+    const groupActionButton=document.querySelector('.connection-group-menu-button');
+    const groupDragHandle=document.querySelector('.connection-group-drag-handle');
+    const groupTitle=document.querySelector('.connection-group-head-row .group-head');
+    const actionRect=groupActionButton?.getBoundingClientRect();
+    const dragRect=groupDragHandle?.getBoundingClientRect();
+    const titleRect=groupTitle?.getBoundingClientRect();
+    layout.groupControlsInline=Boolean(actionRect&&dragRect&&titleRect&&Math.abs((actionRect.top+actionRect.height/2)-(dragRect.top+dragRect.height/2))<2&&Math.abs((actionRect.top+actionRect.height/2)-(titleRect.top+titleRect.height/2))<2);
+    layout.groupDragFirst=Boolean(actionRect&&dragRect&&titleRect&&dragRect.left<titleRect.left&&titleRect.left<actionRect.left);
+    const toastBeforeCancel=document.querySelector('#toast')?.textContent||'';
+    groupDragHandle?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:77,pointerType:'touch',button:0,clientX:dragRect?.left||10,clientY:dragRect?.top||10}));
+    await new Promise(resolve=>setTimeout(resolve,500));
+    const draggingNode=document.querySelector('.group-dragging');
+    renderConnections();
+    await new Promise(resolve=>setTimeout(resolve,1800));
+    layout.groupDragSurvivesRefresh=Boolean(draggingNode&&draggingNode.isConnected&&draggingNode.classList.contains('group-dragging'));
+    document.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:77,pointerType:'touch'}));
+    await new Promise(resolve=>setTimeout(resolve,30));
+    layout.groupCancelDoesNotSave=!document.querySelector('.group-dragging')&&(document.querySelector('#toast')?.textContent||'')===toastBeforeCancel;
+    const refreshedGroupActionButton=document.querySelector('.connection-group-menu-button');
+    layout.groupActionVisible=Boolean(refreshedGroupActionButton&&getComputedStyle(refreshedGroupActionButton).opacity==='1'&&refreshedGroupActionButton.getBoundingClientRect().width>0);
+    refreshedGroupActionButton?.click();
+    layout.groupActionMenuOpened=Boolean(document.querySelector('#actionMenu')?.textContent.includes('重命名分组')&&document.querySelector('#actionMenuBackdrop'));
+    document.querySelector('#actionMenuBackdrop')?.click();
     document.querySelector('.conn-actions .icon-button')?.click();
     layout.menuOpened=Boolean(document.querySelector('#actionMenu')&&document.querySelector('#actionMenuBackdrop'));
     document.querySelector('#actionMenuBackdrop')?.click();
@@ -942,16 +1043,18 @@ app.whenReady().then(async () => {
   const navigationUiFailed = !navigationUi.settingsOnlySections || !navigationUi.settingsSectionMode || !navigationUi.settingsVertical || settingsSectionsFailed || runtimeUiFailed || navigationUi.duplicateSettingsNav !== 0 || navigationUi.inlineUpdateDotPresent || !navigationUi.importOwnSections || !navigationUi.importSectionMode || !navigationUi.importVertical || !navigationUi.importResultsMerged || !importSourceCheck?.resultsVisible || importSectionsFailed || !navigationUi.treeHidden || navigationUi.dotsBeforeRead.some(dot=>!dot.found||dot.hidden!==false) || navigationUi.dotsAfterRead.some(dot=>!dot.found||dot.hidden!==true) || navigationUi.storedReadVersion !== '1.0.9' || !navigationUi.sameVersionStaysRead || !navigationUi.newerVersionShowsAgain;
   const aboutUiFailed = Boolean(aboutUi.error) || !aboutUi.found || !aboutUi.aboutSelected || aboutUi.duplicateSettingsNav !== 0 || !aboutUi.versionMatches || !aboutUi.licenseMetadata || !aboutUi.sourceLink || !aboutUi.modalOpen || !aboutUi.accessible || !aboutUi.fullText || !aboutUi.textScrollable || !aboutUi.cardWithinViewport || !aboutUi.closeFocused || !aboutUi.closedByEscape || !aboutUi.focusReturned || !aboutUi.followupBackdropClean || !aboutUi.followupResolved || !aboutUi.updateUi;
   const expectedSettingsActions = ['通用设置','安全设置','通知设置','启动与运行','关于'];
-  const mobileNavigationFailed = !mobile.importExplorerFirst || !mobile.importWorkspaceEntered || !mobile.settingsNavigation?.explorerFirst || !mobile.settingsNavigation?.workspaceEntered || !mobile.settingsNavigation?.vertical || !mobile.settingsNavigation?.selectedOnly || !mobile.settingsNavigation?.noDuplicateMenu || JSON.stringify(mobile.settingsNavigation?.labels)!==JSON.stringify(expectedSettingsActions) || mobile.mobileTabs?.count !== 7 || !mobile.mobileTabs?.labelsHidden || !mobile.mobileTabs?.iconsCentered || !mobile.mobileTabs?.fits;
+  const mobileNavigationFailed = !mobile.importExplorerFirst || !mobile.importWorkspaceEntered || !mobile.sftp?.found || !mobile.sftp?.fits || !mobile.sftp?.encodingVisible || !mobile.sftp?.terminalJumpVisible || !mobile.settingsNavigation?.explorerFirst || !mobile.settingsNavigation?.workspaceEntered || !mobile.settingsNavigation?.vertical || !mobile.settingsNavigation?.selectedOnly || !mobile.settingsNavigation?.noDuplicateMenu || JSON.stringify(mobile.settingsNavigation?.labels)!==JSON.stringify(expectedSettingsActions) || mobile.mobileTabs?.count !== 7 || !mobile.mobileTabs?.labelsHidden || !mobile.mobileTabs?.iconsCentered || !mobile.mobileTabs?.fits || !mobile.groupActionVisible || !mobile.groupActionMenuOpened || !mobile.groupControlsInline || !mobile.groupDragFirst || !mobile.groupCancelDoesNotSave || !mobile.groupDragSurvivesRefresh;
   const mobileAboutFailed = !mobile.about || !mobile.about.modalOpen || !mobile.about.cardWithinViewport || !mobile.about.textWithinCard || !mobile.about.textScrollable || !mobile.about.closeVisible || !mobile.about.closed;
   const terminalLabels = ['复制选中','复制全部输出','粘贴','全选终端','清屏','滚动到底部','减小字体','增大字体','重新连接'];
-  const terminalUiFailed = !terminalUi.found || !terminalUi.desktopBackHidden || !mobile.terminalBack?.visible || !mobile.terminalBack?.returned || !terminalLabels.every(label=>terminalUi.labels.includes(label)) || terminalUi.metrics.some(item=>Math.abs(item.iconWidth-16)>0.5||Math.abs(item.iconHeight-16)>0.5||item.centerDelta>0.5);
+  const terminalUiFailed = !terminalUi.found || !terminalUi.desktopBackHidden || terminalUi.binaryType !== 'arraybuffer' || !terminalUi.binaryWrite || !terminalUi.encodingMenuOpened || !terminalUi.fontMenuOpened || !mobile.terminalBack?.visible || !mobile.terminalBack?.returned || !terminalLabels.every(label=>terminalUi.labels.includes(label)) || terminalUi.metrics.some(item=>Math.abs(item.iconWidth-16)>0.5||Math.abs(item.iconHeight-16)>0.5||item.centerDelta>0.5);
   const expectedDirectoryActions = ['收藏','新建目录','新建文件','上传','回收站'];
   const directoryActionsUi = sftpUi.directoryActionsUi || {};
   const jobUi = sftpUi.jobUi || {};
+  const textEncodingUi = sftpUi.textEncodingUi || {};
   const jobUiFailed = !jobUi.found || !jobUi.mainHasRunning || !jobUi.mainHasFailed || !jobUi.mainHidesDone || !jobUi.historyEnabled || jobUi.historyCount !== '2' || !jobUi.historyHasDone || !jobUi.historyHidesCurrent || !jobUi.noManualRefresh || !jobUi.compactRow;
-  const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
-  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons ? 1 : 0;
+  const textEncodingUiFailed = !textEncodingUi.opened || textEncodingUi.selected !== 'gbk' || !textEncodingUi.persistDefault || !textEncodingUi.backup || !['utf8','utf8bom','gb18030','gbk','big5','shift_jis','euc-kr','latin1'].every(value=>textEncodingUi.options?.includes(value));
+  const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || textEncodingUiFailed || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !directoryActionsUi.crossHostCopyEnabled || !directoryActionsUi.crossHostMoveDisabled || !directoryActionsUi.filenameEncodingMenu || !directoryActionsUi.terminalJump || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
+  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton ? 1 : 0;
   window.destroy();
   process.exit(code);
 }).catch(error => {

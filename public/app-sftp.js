@@ -2,7 +2,16 @@ let sftpListResizeObserver = null;
 let sftpListResizeFrame = 0;
 const sftpKnownJobStatuses = new Map();
 const sftpPendingDirectoryRefreshes = new Set();
-const SFTP_MUTATING_JOB_TYPES = new Set(["upload", "copy", "move", "extract", "compress"]);
+const SFTP_MUTATING_JOB_TYPES = new Set(["upload", "copy", "cross-copy", "move", "extract", "compress"]);
+const sftpFilenameEncodingOptions = [
+  ["utf8", "UTF-8"],
+  ["gb18030", "GB18030"],
+  ["gbk", "GBK"],
+  ["big5", "Big5"],
+  ["shift_jis", "Shift_JIS"],
+  ["euc-kr", "EUC-KR"],
+  ["latin1", "ISO-8859-1"]
+];
 let sftpLatestJobs = [];
 let sftpRecycleBinConnectionId = 0;
 
@@ -56,13 +65,44 @@ function sftpClipboardMatchesConnection() {
   return Boolean(sftpClipboard?.paths?.length) && Number(sftpClipboard.connectionId) === Number(sftpState.connectionId);
 }
 
+function sftpFilenameEncodingLabel(connection) {
+  return sftpFilenameEncodingOptions.find(([value]) => value === (connection?.sftp_filename_encoding || "utf8"))?.[1] || "UTF-8";
+}
+
 function renderSftpClipboardActions() {
   if (!sftpClipboard?.paths?.length) return "";
   const count = sftpClipboard.paths.length;
   const mode = sftpClipboard.mode === "move" ? "移动" : "复制";
   const matches = sftpClipboardMatchesConnection();
+  const canPaste = matches || sftpClipboard.mode === "copy";
+  const crossHost = canPaste && !matches;
   const source = sftpClipboard.connectionName ? `来源：${sftpClipboard.connectionName}` : "";
-  return `<span class="sftp-clipboard-state" title="${escAttr(source || `${mode}队列 ${count} 项`)}">${icon(mode === "移动" ? "folder-input" : "copy")}<span>${mode}队列 ${count} 项</span></span><button class="primary" onclick="pasteSftpClipboard()" ${matches ? "" : "disabled"} title="${escAttr(matches ? "粘贴到当前目录" : "剪贴板来自其他连接，不能粘贴到这里")}">${icon("clipboard-paste")}<span>粘贴</span></button><button class="icon-button" title="取消复制/移动队列" aria-label="取消复制或移动队列" onclick="cancelSftpClipboard()">${icon("x")}</button>`;
+  return `<span class="sftp-clipboard-state" title="${escAttr(source || `${mode}队列 ${count} 项`)}">${icon(mode === "移动" ? "folder-input" : "copy")}<span>${mode}队列 ${count} 项</span></span><button class="primary" onclick="pasteSftpClipboard()" ${canPaste ? "" : "disabled"} title="${escAttr(matches ? "粘贴到当前目录" : crossHost ? "从来源主机复制到当前主机" : "跨主机仅支持复制，不能移动")}">${icon(crossHost ? "network" : "clipboard-paste")}<span>${crossHost ? "跨主机复制" : "粘贴"}</span></button><button class="icon-button" title="取消复制/移动队列" aria-label="取消复制或移动队列" onclick="cancelSftpClipboard()">${icon("x")}</button>`;
+}
+
+function showSftpFilenameEncodingMenu(event, connectionId) {
+  const connection = connections.find(item => item.id === connectionId);
+  if (!connection) return;
+  const current = connection.sftp_filename_encoding || "utf8";
+  showActionMenu(event, sftpFilenameEncodingOptions.map(([value, label]) => ({
+    label,
+    icon:value === current ? "check" : "languages",
+    run:()=>applySftpFilenameEncoding(connectionId, value, label)
+  })));
+}
+
+async function applySftpFilenameEncoding(connectionId, encoding, label) {
+  const connection = connections.find(item => item.id === connectionId);
+  if (!connection) return;
+  const result = await api(`/api/connections/${connectionId}/sftp-filename-encoding`, {
+    method:"POST",
+    body:JSON.stringify({encoding})
+  });
+  Object.assign(connection, result);
+  const labelNode = document.querySelector("#sftpFilenameEncodingButton span");
+  if (labelNode) labelNode.textContent = label;
+  notify(`SFTP 文件名编码已切换为 ${label}`, "success");
+  await loadSftpPage({connectionId, path:sftpState.path || ".", page:1, refresh:true, keepContents:false});
 }
 
 function refreshSftpDirectoryActions() {
@@ -114,6 +154,8 @@ async function openSftp(id, remotePath=".", updateTab=true) {
       </div>
       <div class="sftp-top-actions">
         <div class="sftp-search search-field">${icon("search")}<input id="sftpSearch" placeholder="搜索当前目录" value="${esc(sftpState.query)}" oninput="setSftpSearch(this.value)"></div>
+        <button id="sftpFilenameEncodingButton" class="sftp-encoding-button" title="切换 SFTP 文件名编码" onclick="showSftpFilenameEncodingMenu(event,${id})">${icon("languages")}<span>${esc(sftpFilenameEncodingLabel(c))}</span>${icon("chevron-down")}</button>
+        <button class="icon-button" title="打开此连接的终端" aria-label="打开此连接的终端" onclick="openTerminal(${id})">${icon("square-terminal")}</button>
         <button class="icon-button" title="上级目录" aria-label="上级目录" onclick="openSftp(${id}, parentRemotePath(sftpState.path))">${icon("corner-left-up")}</button>
         <button class="icon-button" title="刷新目录" aria-label="刷新目录" onclick="refreshSftp()">${icon("refresh-cw")}</button>
       </div>
@@ -400,12 +442,24 @@ function sftpDiffHtml(oldText, newText) {
   return rows.length ? rows.join("") : `<div class="muted">没有内容变化。</div>`;
 }
 
-function sftpTextModal(title, content, size=0, limit=512*1024) {
+const sftpTextEncodingOptions = [
+  ["utf8","UTF-8"], ["utf8bom","UTF-8 BOM"], ["gb18030","GB18030"], ["gbk","GBK"],
+  ["big5","Big5"], ["shift_jis","Shift_JIS"], ["euc-kr","EUC-KR"], ["latin1","ISO-8859-1"]
+];
+
+function sftpTextEncodingLabel(value) {
+  return sftpTextEncodingOptions.find(([encoding]) => encoding === value)?.[1] || String(value || "UTF-8");
+}
+
+function sftpTextModal(title, content, size=0, limit=512*1024, encoding="utf8", preferredEncoding="auto") {
   return new Promise((resolve) => {
     const modal = $("modal");
-    modal.innerHTML = `<div class="modal-card wide sftp-editor-modal"><div class="sftp-editor-head"><div><h2>${esc(title)}</h2><span>${esc(formatBytes(size))} · UTF-8 文本 · 上限 ${esc(formatBytes(limit))}</span></div><span id="sftpEditorStats"></span></div><textarea id="sftpTextEditor" class="text-editor code-editor" spellcheck="false">${esc(content)}</textarea><div id="sftpDiffPreview" class="diff-preview" hidden></div><label class="check-row"><input id="sftpBackupBeforeSave" type="checkbox" checked> 保存前备份远程文件</label><div class="actions"><button id="sftpTextDiff">预览差异</button><button class="primary" id="sftpTextSave">保存 <span class="shortcut-hint">Ctrl+S</span></button><button id="sftpTextClose">关闭</button></div></div>`;
+    modal.innerHTML = `<div class="modal-card wide sftp-editor-modal"><div class="sftp-editor-head"><div><h2>${esc(title)}</h2><span>${esc(formatBytes(size))} · 上限 ${esc(formatBytes(limit))}</span></div><div class="sftp-editor-encoding"><label>文本编码<select id="sftpTextEncoding">${sftpTextEncodingOptions.map(([value,label]) => `<option value="${value}" ${value === encoding ? "selected" : ""}>${label}</option>`).join("")}</select></label><span id="sftpEditorStats"></span></div></div><textarea id="sftpTextEditor" class="text-editor code-editor" spellcheck="false">${esc(content)}</textarea><div id="sftpDiffPreview" class="diff-preview" hidden></div><div class="sftp-editor-options"><label class="check-row"><input id="sftpBackupBeforeSave" type="checkbox" checked> 保存前备份远程文件</label><label class="check-row"><input id="sftpPersistEncoding" type="checkbox" ${preferredEncoding === encoding ? "checked" : ""}> 设为此连接默认文本编码</label></div><div class="actions"><button id="sftpTextDiff">预览差异</button><button class="primary" id="sftpTextSave">保存 <span class="shortcut-hint">Ctrl+S</span></button><button id="sftpTextClose">关闭</button></div></div>`;
     modal.hidden = false;
+    let finished = false;
     const finish = (value) => {
+      if (finished) return;
+      finished = true;
       modal.hidden = true;
       resolve(value);
     };
@@ -427,7 +481,7 @@ function sftpTextModal(title, content, size=0, limit=512*1024) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         if (!updateStats()) return notify(`在线编辑内容不能超过 ${formatBytes(limit)}`, "error");
-        finish({content:editor.value, backup:$("sftpBackupBeforeSave").checked});
+        finish({action:"save", content:editor.value, backup:$("sftpBackupBeforeSave").checked, encoding:$("sftpTextEncoding").value, persist_default:$("sftpPersistEncoding").checked});
       } else if (event.key === "Tab") {
         event.preventDefault();
         const start = editor.selectionStart;
@@ -440,7 +494,16 @@ function sftpTextModal(title, content, size=0, limit=512*1024) {
       box.hidden = false;
       box.innerHTML = sftpDiffHtml(content, editor.value);
     };
-    $("sftpTextSave").onclick = () => finish({content:editor.value, backup:$("sftpBackupBeforeSave").checked});
+    $("sftpTextEncoding").onchange = event => {
+      const nextEncoding = event.target.value;
+      if (editor.value !== content) {
+        event.target.value = encoding;
+        notify("请先保存或放弃当前修改，再切换文本编码", "info");
+        return;
+      }
+      finish({action:"encoding", encoding:nextEncoding});
+    };
+    $("sftpTextSave").onclick = () => finish({action:"save", content:editor.value, backup:$("sftpBackupBeforeSave").checked, encoding:$("sftpTextEncoding").value, persist_default:$("sftpPersistEncoding").checked});
     $("sftpTextClose").onclick = async () => {
       if (editor.value !== content && !await confirmModal("当前修改尚未保存，确认关闭？", "放弃修改", "放弃修改", "继续编辑", true)) return;
       finish(null);
@@ -451,12 +514,23 @@ function sftpTextModal(title, content, size=0, limit=512*1024) {
 
 async function previewSftpText(id, path) {
   try {
-    const data = await api(`/api/connections/${id}/sftp/read?path=${encodeURIComponent(path)}`);
-    const next = await sftpTextModal(path, data.content || "", data.size || 0, data.limit || 512*1024);
-    if (next === null) return;
-    if (next.content === (data.content || "")) return notify("文件内容没有变化", "info");
-    await api(`/api/connections/${id}/sftp/write`, {method:"POST", body:JSON.stringify({path, content:next.content, backup:next.backup})});
-    notify("文件已保存", "success");
+    let requestedEncoding = "";
+    while (true) {
+      const suffix = requestedEncoding ? `&encoding=${encodeURIComponent(requestedEncoding)}` : "";
+      const data = await api(`/api/connections/${id}/sftp/read?path=${encodeURIComponent(path)}${suffix}`);
+      const next = await sftpTextModal(path, data.content || "", data.size || 0, data.limit || 512*1024, data.encoding || "utf8", data.preferred_encoding || "auto");
+      if (next === null) return;
+      if (next.action === "encoding") {
+        requestedEncoding = next.encoding;
+        continue;
+      }
+      if (next.content === (data.content || "") && !(next.persist_default && data.preferred_encoding !== next.encoding)) return notify("文件内容没有变化", "info");
+      await api(`/api/connections/${id}/sftp/write`, {method:"POST", body:JSON.stringify({path, content:next.content, backup:next.backup, encoding:next.encoding, persist_default:next.persist_default})});
+      const connection = connections.find(item => item.id === id);
+      if (connection && next.persist_default) connection.sftp_text_encoding = next.encoding;
+      notify(`文件已按 ${sftpTextEncodingLabel(next.encoding)} 保存`, "success");
+      return;
+    }
   } catch (error) {
     notify(error.message || "读取文件失败", "error");
   }
@@ -673,14 +747,22 @@ function copySingleSftp(path, mode) {
 async function pasteSftpClipboard() {
   const tab = tabs.find(item => item.key === activeTabKey);
   if (!tab || !sftpClipboard?.paths?.length) return notify("剪贴板为空", "info");
-  if (!sftpClipboardMatchesConnection()) return notify("复制/移动队列来自其他连接，不能粘贴到当前服务器", "error");
+  const sameConnection = sftpClipboardMatchesConnection();
+  if (!sameConnection && sftpClipboard.mode !== "copy") return notify("跨主机只支持复制，不能移动", "error");
   const endpoint = sftpClipboard.mode === "move" ? "move" : "copy";
   try {
-    const job = await api(`/api/connections/${tab.id}/sftp/${endpoint}`, {method:"POST", body:JSON.stringify({paths:sftpClipboard.paths, target:sftpState.path || ".", background:true})});
+    const sourceConnectionId = Number(sftpClipboard.connectionId);
+    const requestUrl = sameConnection
+      ? `/api/connections/${tab.id}/sftp/${endpoint}`
+      : `/api/connections/${sourceConnectionId}/sftp/cross-copy`;
+    const requestBody = sameConnection
+      ? {paths:sftpClipboard.paths, target:sftpState.path || ".", background:true}
+      : {paths:sftpClipboard.paths, target_connection_id:Number(tab.id), target:sftpState.path || "."};
+    const job = await api(requestUrl, {method:"POST", body:JSON.stringify(requestBody)});
     trackSftpMutationJob(job);
     sftpClipboard = null;
     refreshSftpDirectoryActions();
-    notify("已加入 SFTP 后台任务", "success");
+    notify(sameConnection ? "已加入 SFTP 后台任务" : "已加入跨主机复制任务", "success");
     refreshSftpJobs();
   } catch (error) {
     notify(error.message || "粘贴失败", "error");

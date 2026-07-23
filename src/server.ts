@@ -30,7 +30,12 @@ const {
   getForward,
   insertConnection,
   updateConnection,
+  updateTerminalPreferences,
+  updateSftpTextEncoding,
+  updateSftpFilenameEncoding,
   bulkUpdateConnections,
+  renameConnectionGroup,
+  reorderConnectionGroups,
   insertForward,
   updateForward,
   deleteConnection,
@@ -44,6 +49,7 @@ const {
   decryptStoredConnectionSecrets,
   validateSortOrder,
   run,
+  all,
   closeDatabase,
   reopenDatabase,
   exportDatabaseBuffer
@@ -78,8 +84,8 @@ const { getPart } = require("./multipart");
 const { parseConfigText, batchTest, saveImported, exportConfig } = require("./importer");
 const { handleTerminalUpgrade, closeAllTerminals } = require("./terminal");
 const { deleteCommandTemplate, handleBatchCommandUpgrade, listCommandTemplates, saveCommandTemplate, updateCommandTemplate } = require("./commands");
-const { clearRemoteRecycleItems, copyRemotePaths, createRemoteFile, deleteRemotePath, deleteRemoteRecycleItem, extractRemoteArchive, invalidateRemoteDirectoryCache, listRemoteDir, listRemoteRecycleItems, makeRemoteDir, moveRemotePaths, normalizeRemotePermissionRequest, readRemoteTextFile, recycleRemotePath, renameRemotePath, restoreRemoteRecycleItem, setRemotePermissions, writeRemoteFile, streamRemoteFile } = require("./sftp");
-const { cancelSftpJob, clearFinishedSftpJobs, compressJob, copyJob, deleteSftpJob, extractJob, getSftpJobFile, listSftpJobs, moveJob, pauseSftpJob, resumeSftpJob, startDownloadJob, startUploadJob } = require("./sftp-jobs");
+const { clearRemoteRecycleItems, copyRemotePaths, createRemoteFile, deleteRemotePath, deleteRemoteRecycleItem, encodeRemoteText, extractRemoteArchive, invalidateRemoteDirectoryCache, listRemoteDir, listRemoteRecycleItems, makeRemoteDir, moveRemotePaths, normalizeRemotePermissionRequest, readRemoteTextFile, recycleRemotePath, renameRemotePath, restoreRemoteRecycleItem, setRemotePermissions, writeRemoteFile, streamRemoteFile } = require("./sftp");
+const { cancelSftpJob, clearFinishedSftpJobs, compressJob, copyJob, crossCopyJob, deleteSftpJob, extractJob, getSftpJobFile, listSftpJobs, moveJob, pauseSftpJob, resumeSftpJob, startDownloadJob, startUploadJob } = require("./sftp-jobs");
 const { appendSystemLog, deleteLogs, listLogs, readLog, readRawLog } = require("./logs");
 const { listNotifications, notifyEvent } = require("./notifications");
 const { authRequired, isAuthenticated, isLocalRequest, login, logout, publicSecuritySettings, readSecuritySettings, resetWebAccessSecurity, sameOrigin, secureHeaders, setPassword, setToken, updateSecurityOptions, writeSecuritySettings } = require("./security");
@@ -1010,6 +1016,26 @@ async function handleApi(req, res, pathname) {
     ids.forEach(clearConnectionHealthCache);
     return sendJson(res, result);
   }
+  if (req.method === "POST" && pathname === "/api/connection-groups/rename") {
+    const data = await readJson(req);
+    const currentName = String(data.current_name || "").trim();
+    const newName = String(data.new_name || "").trim();
+    if (!currentName || currentName.length > 100 || !newName || newName.length > 100) {
+      throw new Error("分组名称长度必须在 1-100 个字符之间");
+    }
+    const groupNames = new Set(all("SELECT DISTINCT group_name FROM connections").map((item) => item.group_name));
+    if (!groupNames.has(currentName)) throw new Error("分组不存在，请刷新后重试");
+    if (currentName !== newName && groupNames.has(newName)) throw new Error("该分组名称已存在，请使用其他名称");
+    if (currentName === newName) return sendJson(res, { ok: true, updated: 0, group_name: newName });
+    createConfigSnapshot("重命名 SSH 连接分组前自动快照");
+    const result = renameConnectionGroup(currentName, newName);
+    return sendJson(res, result);
+  }
+  if (req.method === "POST" && pathname === "/api/connection-groups/reorder") {
+    const data = await readJson(req);
+    createConfigSnapshot("调整 SSH 连接分组顺序前自动快照");
+    return sendJson(res, reorderConnectionGroups(data.names));
+  }
   if (req.method === "POST" && pathname === "/api/forwards/bulk-delete") {
     const data = await readJson(req);
     for (const id of data.ids || []) deleteForward(id, stopForward);
@@ -1017,6 +1043,18 @@ async function handleApi(req, res, pathname) {
   }
 
   const parts = pathname.split("/").filter(Boolean);
+  if (req.method === "POST" && parts.length === 4 && parts[0] === "api" && parts[1] === "connections" && parts[3] === "terminal-preferences") {
+    const id = Number(parts[2]);
+    const result = updateTerminalPreferences(id, await readJson(req));
+    return sendJson(res, result);
+  }
+  if (req.method === "POST" && parts.length === 4 && parts[0] === "api" && parts[1] === "connections" && parts[3] === "sftp-filename-encoding") {
+    const id = Number(parts[2]);
+    const data = await readJson(req);
+    const result = updateSftpFilenameEncoding(id, data.encoding);
+    invalidateRemoteDirectoryCache(id);
+    return sendJson(res, result);
+  }
   if (parts.length >= 3 && parts[0] === "api" && parts[1] === "sftp" && parts[2] === "jobs") {
     if (req.method === "POST" && parts.length === 4 && parts[3] === "clear-finished") return sendJson(res, clearFinishedSftpJobs());
     if (req.method === "POST" && parts.length === 5 && parts[4] === "cancel") return sendJson(res, cancelSftpJob(parts[3]));
@@ -1090,7 +1128,7 @@ async function handleApi(req, res, pathname) {
     if (req.method === "GET" && parts[4] === "read") {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       const remotePath = url.searchParams.get("path") || "";
-      const result = await readRemoteTextFile(connectionId, remotePath);
+      const result = await readRemoteTextFile(connectionId, remotePath, url.searchParams.get("encoding") || "");
       return send(res, 200, { path: remotePath, ...result }, { "Cache-Control": "no-store" });
     }
     if (req.method === "POST" && parts[4] === "upload") {
@@ -1143,6 +1181,12 @@ async function handleApi(req, res, pathname) {
       invalidateRemoteDirectoryCache(connectionId);
       return sendJson(res, result);
     }
+    if (req.method === "POST" && parts[4] === "cross-copy") {
+      const targetConnectionId = Number(data.target_connection_id);
+      const result = crossCopyJob(connectionId, targetConnectionId, data.paths || [], data.target || ".");
+      invalidateRemoteDirectoryCache(targetConnectionId);
+      return sendJson(res, result, 202);
+    }
     if (req.method === "POST" && parts[4] === "move") {
       const result = data.background ? moveJob(connectionId, data.paths || [], data.target) : await moveRemotePaths(connectionId, data.paths || [], data.target);
       invalidateRemoteDirectoryCache(connectionId);
@@ -1165,11 +1209,12 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, result);
     }
     if (req.method === "POST" && parts[4] === "write") {
-      const content = Buffer.from(String(data.content || ""), "utf8");
+      const content = encodeRemoteText(data.content, data.encoding || "utf8");
       if (content.length > 512 * 1024) throw new Error("在线编辑内容不能超过 512 KB");
       const result = await writeRemoteFile(connectionId, data.path, content, { backup: Boolean(data.backup) });
+      if (data.persist_default) updateSftpTextEncoding(connectionId, data.encoding || "utf8");
       invalidateRemoteDirectoryCache(connectionId);
-      return sendJson(res, result);
+      return sendJson(res, { ...result, encoding: data.encoding || "utf8" });
     }
   }
   if (req.method === "POST" && parts.length === 4 && parts[0] === "api" && parts[1] === "connections") {

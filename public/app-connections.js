@@ -36,7 +36,150 @@ function showConnectionMenu(event, id) {
   ]);
 }
 
+function showConnectionGroupMenu(event, groupName) {
+  const names = orderedConnectionGroupNames();
+  const index = names.indexOf(groupName);
+  showActionMenu(event, [
+    {label:"重命名分组", icon:"pencil", run:()=>renameConnectionGroup(groupName)},
+    {separator:true},
+    ...(index > 0 ? [{label:"上移分组", icon:"arrow-up", run:()=>moveConnectionGroup(groupName,-1)}] : []),
+    ...(index >= 0 && index < names.length - 1 ? [{label:"下移分组", icon:"arrow-down", run:()=>moveConnectionGroup(groupName,1)}] : [])
+  ]);
+}
+
+function orderedConnectionGroupNames() {
+  return [...new Set(connections.map(item => item.group_name || "默认分组"))];
+}
+
+async function saveConnectionGroupOrder(names) {
+  await api("/api/connection-groups/reorder", {method:"POST", body:JSON.stringify({names})});
+  const order = new Map(names.map((name,index) => [name,index]));
+  connections.sort((a,b) => (order.get(a.group_name) ?? names.length) - (order.get(b.group_name) ?? names.length)
+    || Number(a.sort_order || 1) - Number(b.sort_order || 1)
+    || Number(a.created_at || 0) - Number(b.created_at || 0)
+    || a.id - b.id);
+  renderConnections();
+}
+
+async function moveConnectionGroup(groupName, delta) {
+  const names = orderedConnectionGroupNames();
+  const index = names.indexOf(groupName);
+  const target = index + delta;
+  if (index < 0 || target < 0 || target >= names.length) return;
+  [names[index], names[target]] = [names[target], names[index]];
+  await saveConnectionGroupOrder(names);
+}
+
+let connectionGroupDrag = null;
+let connectionGroupClickSuppressedUntil = 0;
+
+function toggleConnectionGroupFromHeader(groupName) {
+  if (Date.now() < connectionGroupClickSuppressedUntil) return;
+  toggleGroupOpen(groupName);
+}
+
+function beginConnectionGroupDrag(event, groupName) {
+  if (connectionSearch || event.button > 0) return;
+  const group = event.currentTarget.closest(".group");
+  const originalNames = [...$("connectionGroups").querySelectorAll(".group[data-group-name]")].map(item => decodeURIComponent(item.dataset.groupName));
+  const state = {group, groupName, originalNames, pointerId:event.pointerId, startX:event.clientX, startY:event.clientY, active:false, timer:0};
+  state.timer = setTimeout(() => {
+    state.active = true;
+    group.classList.add("group-dragging");
+    document.body.classList.add("connection-group-drag-active");
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+  }, 450);
+  connectionGroupDrag = state;
+  const move = moveEvent => {
+    if (connectionGroupDrag !== state || moveEvent.pointerId !== state.pointerId) return;
+    if (!state.active && Math.hypot(moveEvent.clientX - state.startX, moveEvent.clientY - state.startY) > 8) {
+      clearTimeout(state.timer);
+      connectionGroupDrag = null;
+      cleanup();
+      return;
+    }
+    if (!state.active) return;
+    moveEvent.preventDefault();
+    const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest(".group");
+    if (target && target !== state.group && target.parentElement === state.group.parentElement) {
+      const rect = target.getBoundingClientRect();
+      target.parentElement.insertBefore(state.group, moveEvent.clientY < rect.top + rect.height / 2 ? target : target.nextSibling);
+    }
+    const tree = $("connectionGroups");
+    const rect = tree?.getBoundingClientRect();
+    if (tree && rect) {
+      if (moveEvent.clientY < rect.top + 40) tree.scrollBy({top:-14});
+      else if (moveEvent.clientY > rect.bottom - 40) tree.scrollBy({top:14});
+    }
+  };
+  const finish = async endEvent => {
+    if (endEvent.pointerId !== state.pointerId) return;
+    clearTimeout(state.timer);
+    cleanup();
+    if (!state.active) {
+      connectionGroupDrag = null;
+      if (state.renderPending) renderConnections();
+      return;
+    }
+    state.group.classList.remove("group-dragging");
+    document.body.classList.remove("connection-group-drag-active");
+    connectionGroupClickSuppressedUntil = Date.now() + 500;
+    connectionGroupDrag = null;
+    const names = [...$("connectionGroups").querySelectorAll(".group[data-group-name]")].map(item => decodeURIComponent(item.dataset.groupName));
+    try {
+      await saveConnectionGroupOrder(names);
+      notify("分组顺序已保存", "success");
+    } catch (error) {
+      notify(error.message, "error");
+      await loadAll();
+    }
+  };
+  const cancel = cancelEvent => {
+    if (cancelEvent.pointerId !== state.pointerId) return;
+    clearTimeout(state.timer);
+    cleanup();
+    state.group.classList.remove("group-dragging");
+    document.body.classList.remove("connection-group-drag-active");
+    connectionGroupDrag = null;
+    const nodes = new Map([...$("connectionGroups").querySelectorAll(".group[data-group-name]")].map(item => [decodeURIComponent(item.dataset.groupName), item]));
+    for (const name of state.originalNames) {
+      const node = nodes.get(name);
+      if (node) $("connectionGroups").appendChild(node);
+    }
+    if (state.renderPending) renderConnections();
+  };
+  const cleanup = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", finish);
+    document.removeEventListener("pointercancel", cancel);
+  };
+  document.addEventListener("pointermove", move, {passive:false});
+  document.addEventListener("pointerup", finish);
+  document.addEventListener("pointercancel", cancel);
+}
+
+async function renameConnectionGroup(currentName) {
+  const nextName = await inputModal("重命名分组", "分组名称", currentName);
+  if (!nextName || nextName === currentName) return;
+  const result = await api("/api/connection-groups/rename", {
+    method:"POST",
+    body:JSON.stringify({current_name:currentName, new_name:nextName})
+  });
+  groupOpen.delete(currentName);
+  groupOpen.add(result.group_name);
+  saveGroupState();
+  await loadAll();
+  if (activeView === "edit" && $("conn_group")) {
+    renderGroupOptions($("conn_group").value === currentName ? result.group_name : $("conn_group").value);
+  }
+  notify(`分组已重命名，更新 ${result.updated} 个连接`, "success");
+}
+
 function renderConnections(){
+  if (connectionGroupDrag) {
+    connectionGroupDrag.renderPending = true;
+    return;
+  }
   if (primaryView === "logs") return renderLogs().catch(e=>notify(e.message,"error"));
   if (primaryView === "running") return renderRunningForwards();
   const uiState = captureUiState($("connectionGroups") || document);
@@ -47,8 +190,12 @@ function renderConnections(){
   [...selectedConnectionIds].forEach(id => { if (!existingIds.has(id)) selectedConnectionIds.delete(id); });
   const groupHtml = names.map(g=>{
     const open = groupOpen.has(g);
-    return `<div class="group">
-      <button class="group-head" onclick="toggleGroupOpen(decodeURIComponent('${encodeURIComponent(g)}'))"><span class="chev">${open ? "▾" : "▸"}</span><span>${esc(g)}</span><span class="count">${groups[g].length}</span></button>
+    return `<div class="group" data-group-name="${encodeURIComponent(g)}">
+      <div class="group-head-row connection-group-head-row">
+        <span class="connection-group-drag-handle" role="button" tabindex="0" title="长按拖动分组排序" aria-label="长按拖动 ${escAttr(g)} 分组排序" onpointerdown="beginConnectionGroupDrag(event,decodeURIComponent('${encodeURIComponent(g)}'))">${icon("grip-vertical")}</span>
+        <button class="group-head" onclick="toggleConnectionGroupFromHeader(decodeURIComponent('${encodeURIComponent(g)}'))" oncontextmenu="showConnectionGroupMenu(event,decodeURIComponent('${encodeURIComponent(g)}'))"><span class="chev">${open ? "▾" : "▸"}</span><span>${esc(g)}</span><span class="count">${groups[g].length}</span></button>
+        <button class="icon-button connection-group-menu-button" onclick="showConnectionGroupMenu(event,decodeURIComponent('${encodeURIComponent(g)}'))" title="分组操作" aria-label="${escAttr(g)} 分组操作">${icon("ellipsis")}</button>
+      </div>
       ${open ? renderVirtualConnectionRows(groups[g]) : ""}
     </div>`;
   }).join("");
@@ -312,7 +459,7 @@ function groupNames(extra="") {
   const names = new Set(connections.map(c => c.group_name || "默认分组"));
   names.add("默认分组");
   if (extra) names.add(extra);
-  return [...names].sort((a,b)=>a.localeCompare(b, "zh-Hans-CN"));
+  return [...names];
 }
 
 function renderGroupOptions(selected="") {

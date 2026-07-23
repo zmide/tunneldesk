@@ -21,8 +21,8 @@ if "%LAN_FLAG%"=="1" (
   set "SHOW_LAN_URLS=1"
 )
 
-if not exist "node_modules\@xterm\xterm\lib\xterm.js" goto install_deps
-if not exist "node_modules\.bin\tsc.cmd" goto install_deps
+node scripts\dependency-state.js >nul 2>nul
+if errorlevel 1 goto install_deps
 if not exist "node_modules\.bin\electron.cmd" goto install_deps_done
 goto build_app
 
@@ -30,12 +30,16 @@ goto build_app
 echo Installing dependencies...
 call npm install --include=dev
 if errorlevel 1 goto failed
+node scripts\dependency-state.js --write
+if errorlevel 1 goto failed
 goto build_app
 
 :install_deps_done
 if not "%TUNNELDESK_WEB_ONLY%"=="1" (
   echo Electron is not installed. Installing desktop dependencies...
   call npm install --include=dev
+  if errorlevel 1 goto failed
+  node scripts\dependency-state.js --write
   if errorlevel 1 goto failed
 )
 

@@ -70,6 +70,16 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
 .group-head:hover, .conn-row:hover { background:var(--hover); }
 .group-head span:nth-child(2) { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .group-head .count { margin-left:auto; color:var(--muted); font-size:12px; }
+.group-head-row.connection-group-head-row { grid-template-columns:24px minmax(0,1fr) 32px; }
+.connection-group-drag-handle { display:grid; place-items:center; color:var(--muted); cursor:grab; opacity:.45; touch-action:none; }
+.connection-group-drag-handle svg { width:14px; height:14px; }
+.group.group-dragging { position:relative; z-index:8; opacity:.82; border:1px solid var(--accent2); background:var(--sidebar); box-shadow:0 8px 20px rgba(0,0,0,.18); }
+.connection-group-drag-active { user-select:none; cursor:grabbing; }
+.connection-group-drag-active .connection-group-head-row { touch-action:none; }
+.connection-group-menu-button { width:28px; min-height:28px; margin-right:4px; padding:4px; border-color:transparent; box-shadow:none; opacity:0; }
+.connection-group-menu-button svg { width:15px; height:15px; }
+.connection-group-head-row:hover .connection-group-menu-button,
+.connection-group-head-row:focus-within .connection-group-menu-button { opacity:1; }
 .chev { width:14px; height:14px; display:inline-grid; place-items:center; color:var(--muted); font-size:10px; }
 .conn-row { min-width:0; border-left:2px solid transparent; padding:7px 8px 8px 27px; }
 .conn-row.bulk-mode { position:relative; padding-left:43px; }
@@ -509,8 +519,11 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
 .crumb.active { color:var(--text); font-weight:600; }
 .crumb-sep { flex:0 0 auto; display:grid; place-items:center; color:var(--muted); }
 .crumb-sep svg { width:13px; height:13px; }
-.sftp-top-actions { display:grid; grid-template-columns:minmax(0,1fr) 34px 34px; gap:6px; align-items:center; }
+.sftp-top-actions { display:grid; grid-template-columns:minmax(0,1fr) auto 34px 34px 34px; gap:6px; align-items:center; }
 .sftp-top-actions .icon-button { width:34px; min-width:34px; height:34px; min-height:34px; }
+.sftp-encoding-button { display:inline-flex; align-items:center; justify-content:center; gap:4px; min-width:96px; height:34px; padding:5px 8px; white-space:nowrap; }
+.sftp-encoding-button svg { width:15px; height:15px; }
+.sftp-encoding-button svg:last-child { width:11px; height:11px; }
 .sftp-search input { height:34px; }
 .sftp-selection-bar { grid-column:1 / -1; display:grid; grid-template-columns:minmax(120px,1fr) auto; gap:8px; align-items:center; min-width:0; padding:6px 8px; border:1px solid color-mix(in srgb,var(--accent2) 32%,var(--line)); border-radius:5px; background:color-mix(in srgb,var(--accent2) 8%,var(--panel)); }
 .sftp-selection-bar[hidden] { display:none; }
@@ -585,6 +598,10 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
 .sftp-editor-head h2 { margin:0 0 3px; }
 .sftp-editor-head span { color:var(--muted); font-size:12px; }
 .sftp-editor-head span.limit-exceeded { color:var(--danger); font-weight:700; }
+.sftp-editor-encoding { display:flex; align-items:flex-end; gap:10px; }
+.sftp-editor-encoding label { display:grid; gap:4px; color:var(--muted); font-size:12px; }
+.sftp-editor-encoding select { min-width:150px; }
+.sftp-editor-options { display:flex; flex-wrap:wrap; gap:8px 18px; }
 .sftp-permission-modal { width:min(760px,calc(100vw - 28px)); }
 .sftp-permission-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding-bottom:10px; border-bottom:1px solid var(--line); }
 .sftp-permission-head h2 { margin:0 0 3px; padding:0; border:0; }
@@ -648,7 +665,7 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
   .runtime-settings-grid { grid-template-columns:1fr; }
   .desktop-settings-grid { grid-template-columns:1fr; }
   .sftp-top { grid-template-columns:1fr; }
-  .sftp-top-actions { grid-template-columns:minmax(0,1fr) 34px 34px; }
+  .sftp-top-actions { grid-template-columns:minmax(0,1fr) auto 34px 34px 34px; }
   .sftp-directory-bar { align-items:stretch; }
   .sftp-directory-actions { overflow-x:auto; }
   .tool-group { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -700,6 +717,9 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
   .tabs { height:38px; }
   .workspace { width:100%; max-width:100%; padding:12px; min-height:0; overflow:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; }
   .sftp-top { top:-12px; margin:-12px -12px 0; padding:12px 12px 8px; }
+  .sftp-top-actions { grid-template-columns:minmax(0,1fr) 34px 34px 34px; }
+  .sftp-top-actions .sftp-search { grid-column:1 / -1; }
+  .sftp-encoding-button { min-width:0; }
   .workspace-head { display:block; }
   .startup-summary { align-items:flex-start; flex-direction:column; }
   .startup-counts { width:100%; }
@@ -779,10 +799,19 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
 }
 
 @media (hover:none) and (pointer:coarse) {
+  .connection-group-menu-button { opacity:1; }
+  .connection-group-drag-handle { opacity:.8; }
   .conn-actions { grid-template-columns:repeat(3,minmax(0,1fr)) 38px; }
   .settings-grid { grid-template-columns:1fr; }
   .sftp-jobs-head, .sftp-job { grid-template-columns:1fr; }
   .conn-actions button:nth-child(4), .conn-actions button:nth-child(5) { grid-column:auto; }
+}
+
+@media (max-width:520px) {
+  .sftp-editor-head { flex-direction:column; }
+  .sftp-editor-encoding { width:100%; align-items:center; justify-content:space-between; }
+  .sftp-editor-encoding label { flex:1; }
+  .sftp-editor-encoding select { width:100%; min-width:0; }
 }
 
 /* Keep running-forward action rows geometrically identical. */
@@ -834,6 +863,7 @@ button > span,
 .mobile-tabs button > svg.lucide { width:18px; height:18px; flex-basis:18px; }
 .terminal-actions button { height:36px; min-height:36px; padding-top:0; padding-bottom:0; }
 .terminal-actions .icon-button { width:36px; min-width:36px; padding:0; }
+.terminal-actions .terminal-dropdown-button svg:last-child { width:12px; height:12px; margin-left:-3px; }
 
 /* Unified control and page polish */
 :root {
@@ -1045,6 +1075,7 @@ details.advanced-settings > :not(summary) { margin-left:12px; margin-right:12px;
   button { min-height:38px; }
   .brand { min-height:50px; }
   .explorer-tools { padding:8px; gap:7px; }
+  .connection-group-menu-button { min-height:34px; opacity:1; }
   .conn-row { padding:11px 12px 12px 18px; }
   .conn-actions { gap:6px; }
   .conn-actions button { min-height:34px; font-size:12px; }

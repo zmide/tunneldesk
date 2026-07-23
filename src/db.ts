@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS connections (
   extra_args TEXT,
   autostart_forwards INTEGER NOT NULL DEFAULT 0,
   sort_order INTEGER NOT NULL DEFAULT 1,
+  terminal_encoding TEXT NOT NULL DEFAULT 'utf8',
+  terminal_font_family TEXT NOT NULL DEFAULT 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  terminal_font_size INTEGER NOT NULL DEFAULT 13,
+  sftp_text_encoding TEXT NOT NULL DEFAULT 'auto',
+  sftp_filename_encoding TEXT NOT NULL DEFAULT 'utf8',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connection_groups (
+  name TEXT PRIMARY KEY,
+  sort_order INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -106,6 +117,16 @@ CREATE TABLE IF NOT EXISTS app_meta (
   if (!connectionColumns.has("sort_order")) {
     run("ALTER TABLE connections ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 1");
   }
+  if (!connectionColumns.has("terminal_encoding")) run("ALTER TABLE connections ADD COLUMN terminal_encoding TEXT NOT NULL DEFAULT 'utf8'");
+  if (!connectionColumns.has("terminal_font_family")) run("ALTER TABLE connections ADD COLUMN terminal_font_family TEXT NOT NULL DEFAULT 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'");
+  if (!connectionColumns.has("terminal_font_size")) run("ALTER TABLE connections ADD COLUMN terminal_font_size INTEGER NOT NULL DEFAULT 13");
+  if (!connectionColumns.has("sftp_text_encoding")) run("ALTER TABLE connections ADD COLUMN sftp_text_encoding TEXT NOT NULL DEFAULT 'auto'");
+  if (!connectionColumns.has("sftp_filename_encoding")) run("ALTER TABLE connections ADD COLUMN sftp_filename_encoding TEXT NOT NULL DEFAULT 'utf8'");
+  const existingGroups = all("SELECT DISTINCT group_name FROM connections ORDER BY group_name COLLATE NOCASE");
+  existingGroups.forEach((row, index) => run(
+    "INSERT OR IGNORE INTO connection_groups(name,sort_order,created_at,updated_at) VALUES(?,?,?,?)",
+    [row.group_name, index + 1, now(), now()]
+  ));
   run("UPDATE connection_forwards SET status='stopped' WHERE pid IS NULL AND status='running'");
   const forwardColumns = new Set(all("PRAGMA table_info(connection_forwards)").map((row) => row.name));
   if (!forwardColumns.has("service_name")) run("ALTER TABLE connection_forwards ADD COLUMN service_name TEXT");
@@ -116,6 +137,9 @@ CREATE TABLE IF NOT EXISTS app_meta (
   if (!forwardColumns.has("last_error")) run("ALTER TABLE connection_forwards ADD COLUMN last_error TEXT");
   if (!forwardColumns.has("started_at")) run("ALTER TABLE connection_forwards ADD COLUMN started_at INTEGER");
   if (!forwardColumns.has("url_scheme")) run("ALTER TABLE connection_forwards ADD COLUMN url_scheme TEXT");
+  run("CREATE INDEX IF NOT EXISTS idx_connection_forwards_connection_id ON connection_forwards(connection_id,id)");
+  run("CREATE INDEX IF NOT EXISTS idx_connections_group_sort ON connections(group_name,sort_order,created_at,id)");
+  run("CREATE INDEX IF NOT EXISTS idx_connection_groups_sort ON connection_groups(sort_order,name)");
   return db;
 }
 
@@ -156,6 +180,40 @@ function validateSortOrder(value) {
   return order;
 }
 
+const TERMINAL_ENCODINGS = new Set(["utf8", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
+const SFTP_TEXT_ENCODINGS = new Set(["auto", "utf8", "utf8bom", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
+const SFTP_FILENAME_ENCODINGS = new Set(["utf8", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
+const DEFAULT_TERMINAL_FONT = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+
+function cleanTerminalPreferences(data, existing = null) {
+  const terminalEncoding = String(data.terminal_encoding ?? existing?.terminal_encoding ?? "utf8").toLowerCase();
+  if (!TERMINAL_ENCODINGS.has(terminalEncoding)) throw new Error("不支持的终端编码");
+  const terminalFontFamily = String(data.terminal_font_family ?? existing?.terminal_font_family ?? DEFAULT_TERMINAL_FONT).trim();
+  if (!terminalFontFamily || terminalFontFamily.length > 300) throw new Error("终端字体设置长度必须在 1-300 个字符之间");
+  const terminalFontSize = Number(data.terminal_font_size ?? existing?.terminal_font_size ?? 13);
+  if (!Number.isInteger(terminalFontSize) || terminalFontSize < 10 || terminalFontSize > 32) throw new Error("终端字号必须是 10-32 之间的整数");
+  return { terminal_encoding: terminalEncoding, terminal_font_family: terminalFontFamily, terminal_font_size: terminalFontSize };
+}
+
+function cleanSftpTextEncoding(value, fallback = "auto") {
+  const encoding = String(value ?? fallback ?? "auto").toLowerCase();
+  if (!SFTP_TEXT_ENCODINGS.has(encoding)) throw new Error("不支持的 SFTP 文本编码");
+  return encoding;
+}
+
+function cleanSftpFilenameEncoding(value, fallback = "utf8") {
+  const encoding = String(value ?? fallback ?? "utf8").toLowerCase();
+  if (!SFTP_FILENAME_ENCODINGS.has(encoding)) throw new Error("不支持的 SFTP 文件名编码");
+  return encoding;
+}
+
+function ensureConnectionGroup(name) {
+  const groupName = String(name || "").trim();
+  if (!groupName) return;
+  const next = Number(get("SELECT COALESCE(MAX(sort_order),0)+1 AS value FROM connection_groups")?.value || 1);
+  run("INSERT OR IGNORE INTO connection_groups(name,sort_order,created_at,updated_at) VALUES(?,?,?,?)", [groupName, next, now(), now()]);
+}
+
 function pidRunning(pid) {
   if (!pid) return false;
   try {
@@ -191,7 +249,10 @@ function cleanConnection(data, defaultExtraArgs, existing = null) {
     tags: String(data.tags || "").split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean).join(","),
     extra_args: encryptText(String(data.extra_args || defaultExtraArgs).trim()),
     autostart_forwards: Number(data.autostart_forwards || 0) ? 1 : 0,
-    sort_order: validateSortOrder(data.sort_order ?? existing?.sort_order ?? 1)
+    sort_order: validateSortOrder(data.sort_order ?? existing?.sort_order ?? 1),
+    ...cleanTerminalPreferences(data, existing),
+    sftp_text_encoding: cleanSftpTextEncoding(data.sftp_text_encoding, existing?.sftp_text_encoding),
+    sftp_filename_encoding: cleanSftpFilenameEncoding(data.sftp_filename_encoding, existing?.sftp_filename_encoding)
   };
 }
 
@@ -220,19 +281,26 @@ function cleanForward(data) {
 }
 
 function listConnections() {
-  const rows = all("SELECT * FROM connections ORDER BY group_name COLLATE NOCASE, sort_order, created_at, id");
+  const rows = all(`SELECT connections.*, connection_groups.sort_order AS group_sort_order
+    FROM connections LEFT JOIN connection_groups ON connection_groups.name=connections.group_name
+    ORDER BY COALESCE(connection_groups.sort_order,2147483647), connections.sort_order, connections.created_at, connections.id`);
+  const forwardsByConnection = new Map();
+  for (const forward of all("SELECT * FROM connection_forwards ORDER BY connection_id,id")) {
+    const item = {
+      ...forward,
+      status: forward.pid && pidRunning(forward.pid) ? "running" : forward.status === "running" && !forward.pid ? "running" : forward.status === "failed" ? "failed" : "stopped",
+      pid: forward.pid && pidRunning(forward.pid) ? forward.pid : null
+    };
+    if (!forwardsByConnection.has(forward.connection_id)) forwardsByConnection.set(forward.connection_id, []);
+    forwardsByConnection.get(forward.connection_id).push(item);
+  }
   return rows.map((conn) => ({
     ...conn,
     identity_file: decryptText(conn.identity_file),
     ssh_password: undefined,
     has_password: Boolean(conn.ssh_password),
     extra_args: decryptText(conn.extra_args),
-    forwards: all("SELECT * FROM connection_forwards WHERE connection_id = ? ORDER BY id", [conn.id])
-      .map((forward) => ({
-        ...forward,
-        status: forward.pid && pidRunning(forward.pid) ? "running" : forward.status === "running" && !forward.pid ? "running" : forward.status === "failed" ? "failed" : "stopped",
-        pid: forward.pid && pidRunning(forward.pid) ? forward.pid : null
-      }))
+    forwards: forwardsByConnection.get(conn.id) || []
   }));
 }
 
@@ -250,12 +318,13 @@ function getForward(id) {
 
 function insertConnection(data, defaultExtraArgs) {
   const item = cleanConnection(data, defaultExtraArgs);
+  ensureConnectionGroup(item.group_name);
   const ts = now();
   const result = run(
     `INSERT INTO connections
-     (name, group_name, ssh_host, ssh_port, ssh_user, auth_type, identity_file, ssh_password, tags, extra_args, autostart_forwards, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, item.sort_order, ts, ts]
+     (name, group_name, ssh_host, ssh_port, ssh_user, auth_type, identity_file, ssh_password, tags, extra_args, autostart_forwards, sort_order, terminal_encoding, terminal_font_family, terminal_font_size, sftp_text_encoding, sftp_filename_encoding, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, item.sort_order, item.terminal_encoding, item.terminal_font_family, item.terminal_font_size, item.sftp_text_encoding, item.sftp_filename_encoding, ts, ts]
   );
   return Number(result.lastInsertRowid);
 }
@@ -264,10 +333,34 @@ function updateConnection(id, data, defaultExtraArgs) {
   const existing = get("SELECT * FROM connections WHERE id=?", [Number(id)]);
   if (!existing) throw new Error("连接不存在");
   const item = cleanConnection(data, defaultExtraArgs, existing);
+  ensureConnectionGroup(item.group_name);
   run(
-    `UPDATE connections SET name=?, group_name=?, ssh_host=?, ssh_port=?, ssh_user=?, auth_type=?, identity_file=?, ssh_password=?, tags=?, extra_args=?, autostart_forwards=?, sort_order=?, updated_at=? WHERE id=?`,
-    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, item.sort_order, now(), Number(id)]
+    `UPDATE connections SET name=?, group_name=?, ssh_host=?, ssh_port=?, ssh_user=?, auth_type=?, identity_file=?, ssh_password=?, tags=?, extra_args=?, autostart_forwards=?, sort_order=?, terminal_encoding=?, terminal_font_family=?, terminal_font_size=?, sftp_text_encoding=?, sftp_filename_encoding=?, updated_at=? WHERE id=?`,
+    [item.name, item.group_name, item.ssh_host, item.ssh_port, item.ssh_user, item.auth_type, item.identity_file, item.ssh_password, item.tags, item.extra_args, item.autostart_forwards, item.sort_order, item.terminal_encoding, item.terminal_font_family, item.terminal_font_size, item.sftp_text_encoding, item.sftp_filename_encoding, now(), Number(id)]
   );
+}
+
+function updateTerminalPreferences(id, data) {
+  const existing = get("SELECT * FROM connections WHERE id=?", [Number(id)]);
+  if (!existing) throw new Error("连接不存在");
+  const item = cleanTerminalPreferences(data, existing);
+  run("UPDATE connections SET terminal_encoding=?,terminal_font_family=?,terminal_font_size=?,updated_at=? WHERE id=?",
+    [item.terminal_encoding, item.terminal_font_family, item.terminal_font_size, now(), Number(id)]);
+  return item;
+}
+
+function updateSftpTextEncoding(id, value) {
+  getConnection(id);
+  const encoding = cleanSftpTextEncoding(value);
+  run("UPDATE connections SET sftp_text_encoding=?,updated_at=? WHERE id=?", [encoding, now(), Number(id)]);
+  return { sftp_text_encoding: encoding };
+}
+
+function updateSftpFilenameEncoding(id, value) {
+  getConnection(id);
+  const encoding = cleanSftpFilenameEncoding(value);
+  run("UPDATE connections SET sftp_filename_encoding=?,updated_at=? WHERE id=?", [encoding, now(), Number(id)]);
+  return { sftp_filename_encoding: encoding };
 }
 
 function bulkUpdateConnections(connectionIds, changes: any = {}) {
@@ -282,6 +375,7 @@ function bulkUpdateConnections(connectionIds, changes: any = {}) {
     if (!groupName || groupName.length > 100) throw new Error("分组名称长度必须在 1-100 个字符之间");
     assignments.push("group_name=?");
     values.push(groupName);
+    ensureConnectionGroup(groupName);
   }
   if (Object.prototype.hasOwnProperty.call(changes, "ssh_port")) {
     assignments.push("ssh_port=?");
@@ -320,6 +414,41 @@ function bulkUpdateConnections(connectionIds, changes: any = {}) {
     throw error;
   }
   return { ok: true, updated: ids.length };
+}
+
+function renameConnectionGroup(currentName, nextName) {
+  const source = String(currentName || "").trim();
+  const target = String(nextName || "").trim();
+  if (!source || source.length > 100 || !target || target.length > 100) {
+    throw new Error("分组名称长度必须在 1-100 个字符之间");
+  }
+  const existing = get("SELECT COUNT(*) AS count FROM connections WHERE group_name=?", [source]);
+  if (!Number(existing?.count)) throw new Error("分组不存在，请刷新后重试");
+  if (source === target) return { ok: true, updated: 0, group_name: target };
+  const conflict = get("SELECT 1 AS found FROM connections WHERE group_name=? LIMIT 1", [target]);
+  if (conflict) throw new Error("该分组名称已存在，请使用其他名称");
+  const result = run("UPDATE connections SET group_name=?, updated_at=? WHERE group_name=?", [target, now(), source]);
+  run("DELETE FROM connection_groups WHERE name=?", [target]);
+  run("UPDATE connection_groups SET name=?,updated_at=? WHERE name=?", [target, now(), source]);
+  return { ok: true, updated: Number(result?.changes || 0), group_name: target };
+}
+
+function reorderConnectionGroups(names) {
+  const requested = [...new Set((names || []).map((name) => String(name || "").trim()).filter(Boolean))];
+  const active = all("SELECT DISTINCT group_name FROM connections").map((row) => row.group_name);
+  if (requested.length !== active.length || active.some((name) => !requested.includes(name))) throw new Error("分组列表已变化，请刷新后重试");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    requested.forEach((name, index) => {
+      ensureConnectionGroup(name);
+      run("UPDATE connection_groups SET sort_order=?,updated_at=? WHERE name=?", [index + 1, now(), name]);
+    });
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return { ok: true, groups: requested.length };
 }
 
 function isEncryptedText(value) {
@@ -460,6 +589,7 @@ function exportConfigSnapshot() {
   return {
     version: 1,
     connections: all("SELECT * FROM connections ORDER BY id"),
+    connection_groups: all("SELECT * FROM connection_groups ORDER BY sort_order,name"),
     forwards: all("SELECT * FROM connection_forwards ORDER BY id").map(row => ({...row, pid:null, status:"stopped", restore:0, reconnect_count:0, started_at:null})),
     forward_templates: all("SELECT * FROM forward_templates ORDER BY id")
   };
@@ -471,8 +601,11 @@ function restoreConfigSnapshot(snapshot) {
   try {
     run("DELETE FROM connection_forwards");
     run("DELETE FROM connections");
+    run("DELETE FROM connection_groups");
     run("DELETE FROM forward_templates");
-    for (const row of snapshot.connections) run("INSERT INTO connections(id,name,group_name,ssh_host,ssh_port,ssh_user,auth_type,identity_file,ssh_password,tags,extra_args,autostart_forwards,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.name,row.group_name,row.ssh_host,row.ssh_port,row.ssh_user,row.auth_type || "key",row.identity_file,row.ssh_password || null,row.tags,row.extra_args,row.autostart_forwards,Number.isInteger(Number(row.sort_order)) && Number(row.sort_order) > 0 ? Number(row.sort_order) : 1,row.created_at,row.updated_at]);
+    const groups = Array.isArray(snapshot.connection_groups) ? snapshot.connection_groups : [...new Set(snapshot.connections.map((row) => row.group_name))].map((name,index) => ({name,sort_order:index+1,created_at:now(),updated_at:now()}));
+    for (const row of groups) run("INSERT INTO connection_groups(name,sort_order,created_at,updated_at) VALUES(?,?,?,?)", [row.name,row.sort_order,row.created_at,row.updated_at]);
+    for (const row of snapshot.connections) run("INSERT INTO connections(id,name,group_name,ssh_host,ssh_port,ssh_user,auth_type,identity_file,ssh_password,tags,extra_args,autostart_forwards,sort_order,terminal_encoding,terminal_font_family,terminal_font_size,sftp_text_encoding,sftp_filename_encoding,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.name,row.group_name,row.ssh_host,row.ssh_port,row.ssh_user,row.auth_type || "key",row.identity_file,row.ssh_password || null,row.tags,row.extra_args,row.autostart_forwards,Number.isInteger(Number(row.sort_order)) && Number(row.sort_order) > 0 ? Number(row.sort_order) : 1,row.terminal_encoding || "utf8",row.terminal_font_family || DEFAULT_TERMINAL_FONT,Number(row.terminal_font_size) || 13,row.sftp_text_encoding || "auto",row.sftp_filename_encoding || "utf8",row.created_at,row.updated_at]);
     for (const row of snapshot.forwards) run("INSERT INTO connection_forwards(id,connection_id,mode,service_name,service_type,service_note,url_scheme,bind_host,bind_port,target_host,target_port,pid,status,restore,reconnect_count,last_error,started_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.connection_id,row.mode,row.service_name,row.service_type,row.service_note,row.url_scheme,row.bind_host,row.bind_port,row.target_host,row.target_port,null,"stopped",0,0,row.last_error || null,null,row.created_at,row.updated_at]);
     for (const row of snapshot.forward_templates) run("INSERT INTO forward_templates(id,name,mode,service_name,service_type,service_note,url_scheme,bind_host,bind_port,target_host,target_port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", [row.id,row.name,row.mode,row.service_name,row.service_type,row.service_note,row.url_scheme,row.bind_host,row.bind_port,row.target_host,row.target_port,row.created_at,row.updated_at]);
     db.exec("COMMIT");
@@ -536,7 +669,12 @@ module.exports = {
   getForward,
   insertConnection,
   updateConnection,
+  updateTerminalPreferences,
+  updateSftpTextEncoding,
+  updateSftpFilenameEncoding,
   bulkUpdateConnections,
+  renameConnectionGroup,
+  reorderConnectionGroups,
   encryptStoredConnectionSecrets,
   decryptStoredConnectionSecrets,
   insertForward,

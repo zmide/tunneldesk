@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
+const iconv = require("iconv-lite");
 const path = require("node:path");
 const { TextDecoder } = require("node:util");
 const { SSH_BIN } = require("./config");
@@ -20,6 +21,27 @@ function shellQuote(value) {
   return `'${String(value || "").replace(/'/g, `'\\''`)}'`;
 }
 
+const FILENAME_ENCODINGS = new Set(["utf8", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
+
+function filenameEncoding(connection) {
+  const encoding = String(connection?.sftp_filename_encoding || "utf8").toLowerCase();
+  return FILENAME_ENCODINGS.has(encoding) ? encoding : "utf8";
+}
+
+function remotePathOperand(connection, value) {
+  const text = String(value || "");
+  const encoding = filenameEncoding(connection);
+  if (encoding === "utf8") return shellQuote(text);
+  const bytes = iconv.encode(text, encoding);
+  if (iconv.decode(bytes, encoding) !== text) throw new Error(`文件名包含 ${encoding} 无法表示的字符`);
+  const octal = [...bytes].map((byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
+  return `"$(printf '%b' ${shellQuote(octal)})"`;
+}
+
+function decodeRemoteFilenameOutput(connection, body) {
+  return iconv.decode(body, filenameEncoding(connection));
+}
+
 function permissionPathOperand(value) {
   const normalized = String(value || "").replace(/\\/g, "/");
   if (normalized.startsWith("/") || normalized.startsWith("./")) return normalized;
@@ -38,9 +60,10 @@ function sshArgs(connection, command) {
 }
 
 function spawnRemote(connection, command) {
+  const portableCommand = `sh -c ${shellQuote(command)}`;
   return isPasswordConnection(connection)
-    ? spawnPasswordCommand(connection, command)
-    : spawn(SSH_BIN, sshArgs(connection, command), { stdio: ["pipe", "pipe", "pipe"] });
+    ? spawnPasswordCommand(connection, portableCommand)
+    : spawn(SSH_BIN, sshArgs(connection, portableCommand), { stdio: ["pipe", "pipe", "pipe"] });
 }
 
 function runRemote(connection, command, input = null, timeoutMs = 30000): Promise<Buffer> {
@@ -202,11 +225,11 @@ async function enumerateRemoteDir(connectionId, remotePath = ".") {
     `find . ! -name . ! -name ${shellQuote(SFTP_RECYCLE_DIRECTORY)} -prune -exec sh -c 'for entry in "$@"; do if [ -d "$entry" ]; then type=d; else type=f; fi; if [ "$TD_STAT_STYLE" = gnu ]; then meta=$(stat -c "%s %Y %a %U %G" "$entry"); else meta=$(stat -f "%z %m %Lp %Su %Sg" "$entry"); fi || exit 1; name=\${entry#./}; printf "%s\\t%s\\t%s\\n" "$name" "$type" "$meta"; done' sh {} +`
   ].join("; ");
   const command = [
-    `cd ${shellQuote(dir)}`,
+    `cd ${remotePathOperand(connection, dir)}`,
     `pwd`,
     listEntries
   ].join(" && ");
-  const output = (await runRemote(connection, command)).toString("utf8");
+  const output = decodeRemoteFilenameOutput(connection, await runRemote(connection, command));
   const [cwdLine, ...rows] = output.split(/\r?\n/).filter(Boolean);
   return {
     path: cwdLine || dir,
@@ -242,7 +265,7 @@ async function listRemoteDir(connectionId, remotePath = ".", options: any = {}) 
 
 async function makeRemoteDir(connectionId, remotePath) {
   const connection = getConnection(connectionId);
-  await runRemote(connection, `mkdir -p ${shellQuote(remotePath)}`);
+  await runRemote(connection, `mkdir -p ${remotePathOperand(connection, remotePath)}`);
   return { ok: true };
 }
 
@@ -257,9 +280,9 @@ function normalizeRemoteCreateFilePath(remotePath) {
   return normalized;
 }
 
-function buildRemoteCreateFileCommand(remotePath) {
+function buildRemoteCreateFileCommand(remotePath, connection = null) {
   const normalizedPath = normalizeRemoteCreateFilePath(remotePath);
-  const quotedPath = shellQuote(normalizedPath);
+  const quotedPath = remotePathOperand(connection, normalizedPath);
   return {
     path: normalizedPath,
     command: `if [ -e ${quotedPath} ] || [ -L ${quotedPath} ]; then printf '%s\\n' '目标文件已存在' >&2; exit 1; fi; : > ${quotedPath}`
@@ -268,14 +291,14 @@ function buildRemoteCreateFileCommand(remotePath) {
 
 async function createRemoteFile(connectionId, remotePath) {
   const connection = getConnection(connectionId);
-  const { path: normalizedPath, command } = buildRemoteCreateFileCommand(remotePath);
+  const { path: normalizedPath, command } = buildRemoteCreateFileCommand(remotePath, connection);
   await runRemote(connection, command, null, 60000);
   return { ok: true, path: normalizedPath };
 }
 
 async function deleteRemotePath(connectionId, remotePath) {
   const connection = getConnection(connectionId);
-  await runRemote(connection, `rm -rf -- ${shellQuote(remotePath)}`);
+  await runRemote(connection, `rm -rf -- ${remotePathOperand(connection, remotePath)}`);
   return { ok: true };
 }
 
@@ -300,7 +323,7 @@ function remoteRecycleRootAssignment() {
   return `if [ -z "$HOME" ]; then echo "远端用户主目录不可用" >&2; exit 1; fi; td_root="$HOME/${SFTP_RECYCLE_DIRECTORY}"`;
 }
 
-function buildRecycleRemotePathCommand(remotePath, itemId, deletedAt = Date.now()) {
+function buildRecycleRemotePathCommand(remotePath, itemId, deletedAt = Date.now(), connection = null) {
   const source = normalizeRemoteRecyclePath(remotePath);
   const id = normalizeRemoteRecycleItemId(itemId);
   const encodedPath = Buffer.from(source, "utf8").toString("base64");
@@ -308,11 +331,11 @@ function buildRecycleRemotePathCommand(remotePath, itemId, deletedAt = Date.now(
   return [
     remoteRecycleRootAssignment(),
     `td_item="$td_root/items/${id}"`,
-    `if [ ! -e ${shellQuote(sourceOperand)} ] && [ ! -L ${shellQuote(sourceOperand)} ]; then echo "远程项目不存在" >&2; exit 1; fi`,
+    `if [ ! -e ${remotePathOperand(connection, sourceOperand)} ] && [ ! -L ${remotePathOperand(connection, sourceOperand)} ]; then echo "远程项目不存在" >&2; exit 1; fi`,
     `mkdir -p "$td_root/items" && mkdir "$td_item"`,
     `printf '%s\\n' ${shellQuote(encodedPath)} > "$td_item/path.b64"`,
     `printf '%s\\n' ${shellQuote(String(Number(deletedAt) || Date.now()))} > "$td_item/deleted-at"`,
-    `if mv ${shellQuote(sourceOperand)} "$td_item/payload"; then :; else rm -rf "$td_item"; exit 1; fi`
+    `if mv ${remotePathOperand(connection, sourceOperand)} "$td_item/payload"; then :; else rm -rf "$td_item"; exit 1; fi`
   ].join("; ");
 }
 
@@ -345,7 +368,7 @@ function parseRemoteRecycleItems(output) {
   }).sort((left, right) => right.deleted_at - left.deleted_at);
 }
 
-function buildRestoreRemoteRecycleCommand(itemId, originalPath) {
+function buildRestoreRemoteRecycleCommand(itemId, originalPath, connection = null) {
   const id = normalizeRemoteRecycleItemId(itemId);
   const target = normalizeRemoteRecyclePath(originalPath);
   const targetOperand = permissionPathOperand(target);
@@ -354,9 +377,9 @@ function buildRestoreRemoteRecycleCommand(itemId, originalPath) {
     remoteRecycleRootAssignment(),
     `td_item="$td_root/items/${id}"`,
     `if [ ! -e "$td_item/payload" ] && [ ! -L "$td_item/payload" ]; then echo "回收站项目不存在" >&2; exit 1; fi`,
-    `if [ -e ${shellQuote(targetOperand)} ] || [ -L ${shellQuote(targetOperand)} ]; then echo "原路径已有同名项目，无法恢复" >&2; exit 1; fi`,
-    `mkdir -p ${shellQuote(parentOperand)}`,
-    `mv "$td_item/payload" ${shellQuote(targetOperand)}`,
+    `if [ -e ${remotePathOperand(connection, targetOperand)} ] || [ -L ${remotePathOperand(connection, targetOperand)} ]; then echo "原路径已有同名项目，无法恢复" >&2; exit 1; fi`,
+    `mkdir -p ${remotePathOperand(connection, parentOperand)}`,
+    `mv "$td_item/payload" ${remotePathOperand(connection, targetOperand)}`,
     `rm -rf "$td_item"`
   ].join("; ");
 }
@@ -381,7 +404,7 @@ async function recycleRemotePath(connectionId, remotePath) {
   const id = `${Date.now().toString(36)}-${randomBytes(8).toString("hex")}`;
   const deletedAt = Date.now();
   const originalPath = normalizeRemoteRecyclePath(remotePath);
-  await runRemote(connection, buildRecycleRemotePathCommand(originalPath, id, deletedAt), null, 60000);
+  await runRemote(connection, buildRecycleRemotePathCommand(originalPath, id, deletedAt, connection), null, 60000);
   return { ok: true, recycled: true, id, original_path: originalPath, deleted_at: deletedAt };
 }
 
@@ -393,7 +416,7 @@ async function listRemoteRecycleItems(connectionId) {
 async function restoreRemoteRecycleItem(connectionId, itemId) {
   const connection = getConnection(connectionId);
   const originalPath = await readRemoteRecycleItem(connection, itemId);
-  await runRemote(connection, buildRestoreRemoteRecycleCommand(itemId, originalPath), null, 60000);
+  await runRemote(connection, buildRestoreRemoteRecycleCommand(itemId, originalPath, connection), null, 60000);
   return { ok: true, original_path: originalPath };
 }
 
@@ -411,7 +434,7 @@ async function clearRemoteRecycleItems(connectionId) {
 
 async function renameRemotePath(connectionId, from, to) {
   const connection = getConnection(connectionId);
-  await runRemote(connection, `mv -- ${shellQuote(from)} ${shellQuote(to)}`);
+  await runRemote(connection, `mv -- ${remotePathOperand(connection, from)} ${remotePathOperand(connection, to)}`);
   return { ok: true };
 }
 
@@ -447,11 +470,11 @@ function normalizeRemotePermissionRequest(paths, mode, recursive = false, owner 
   };
 }
 
-function buildRemotePermissionCommand(request) {
+function buildRemotePermissionCommand(request, connection = null) {
   const normalized = normalizeRemotePermissionRequest(request?.paths, request?.mode, request?.recursive, request?.owner, request?.group);
   const permissionPaths = normalized.paths.map(permissionPathOperand);
-  const quotedPaths = permissionPaths.map(shellQuote).join(" ");
-  const commands = permissionPaths.map((item) => `if [ -L ${shellQuote(item)} ]; then echo "暂不支持修改符号链接权限" >&2; exit 1; fi`);
+  const quotedPaths = permissionPaths.map((item) => remotePathOperand(connection, item)).join(" ");
+  const commands = permissionPaths.map((item) => `if [ -L ${remotePathOperand(connection, item)} ]; then echo "暂不支持修改符号链接权限" >&2; exit 1; fi`);
   const recursiveFlag = normalized.recursive ? "-R " : "";
   if (normalized.owner && normalized.group) {
     commands.push(`chown ${recursiveFlag}${shellQuote(`${normalized.owner}:${normalized.group}`)} ${quotedPaths}`);
@@ -467,24 +490,24 @@ function buildRemotePermissionCommand(request) {
 async function setRemotePermissions(connectionId, paths, mode, recursive = false, owner = "", group = "") {
   const connection = getConnection(connectionId);
   const request = normalizeRemotePermissionRequest(paths, mode, recursive, owner, group);
-  await runRemote(connection, buildRemotePermissionCommand(request), null, 120000);
+  await runRemote(connection, buildRemotePermissionCommand(request, connection), null, 120000);
   invalidateRemoteDirectoryCache(connectionId);
   return { ok: true, ...request };
 }
 
 async function copyRemotePaths(connectionId, paths, targetDir) {
   const connection = getConnection(connectionId);
-  const quoted = (paths || []).map(shellQuote).join(" ");
+  const quoted = (paths || []).map((item) => remotePathOperand(connection, item)).join(" ");
   if (!quoted) throw new Error("请选择要复制的文件");
-  await runRemote(connection, `cp -a -- ${quoted} ${shellQuote(targetDir)}`, null, 120000);
+  await runRemote(connection, `cp -a -- ${quoted} ${remotePathOperand(connection, targetDir)}`, null, 120000);
   return { ok: true };
 }
 
 async function moveRemotePaths(connectionId, paths, targetDir) {
   const connection = getConnection(connectionId);
-  const quoted = (paths || []).map(shellQuote).join(" ");
+  const quoted = (paths || []).map((item) => remotePathOperand(connection, item)).join(" ");
   if (!quoted) throw new Error("请选择要移动的文件");
-  await runRemote(connection, `mv -- ${quoted} ${shellQuote(targetDir)}`, null, 120000);
+  await runRemote(connection, `mv -- ${quoted} ${remotePathOperand(connection, targetDir)}`, null, 120000);
   return { ok: true };
 }
 
@@ -492,32 +515,65 @@ async function extractRemoteArchive(connectionId, remotePath, targetDir) {
   const connection = getConnection(connectionId);
   const lower = String(remotePath || "").toLowerCase();
   let command;
-  if (lower.endsWith(".zip")) command = `cd ${shellQuote(targetDir)} && unzip -o ${shellQuote(remotePath)}`;
-  else if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) command = `cd ${shellQuote(targetDir)} && tar -xzf ${shellQuote(remotePath)}`;
-  else if (lower.endsWith(".tar")) command = `cd ${shellQuote(targetDir)} && tar -xf ${shellQuote(remotePath)}`;
+  if (lower.endsWith(".zip")) command = `cd ${remotePathOperand(connection, targetDir)} && unzip -o ${remotePathOperand(connection, remotePath)}`;
+  else if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) command = `cd ${remotePathOperand(connection, targetDir)} && tar -xzf ${remotePathOperand(connection, remotePath)}`;
+  else if (lower.endsWith(".tar")) command = `cd ${remotePathOperand(connection, targetDir)} && tar -xf ${remotePathOperand(connection, remotePath)}`;
   else throw new Error("暂只支持 zip、tar.gz、tgz、tar 解压");
   await runRemote(connection, command, null, 120000);
   return { ok: true };
 }
 
-async function readRemoteTextFile(connectionId, remotePath) {
+const TEXT_ENCODINGS = new Set(["auto", "utf8", "utf8bom", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
+
+function normalizeTextEncoding(value, fallback = "auto") {
+  const encoding = String(value || fallback || "auto").toLowerCase();
+  if (!TEXT_ENCODINGS.has(encoding)) throw new Error("不支持的文本编码");
+  return encoding;
+}
+
+function decodeRemoteText(body, requestedEncoding = "auto") {
+  let encoding = normalizeTextEncoding(requestedEncoding);
+  const hasUtf8Bom = body.length >= 3 && body[0] === 0xef && body[1] === 0xbb && body[2] === 0xbf;
+  if (encoding === "auto") {
+    if (hasUtf8Bom) encoding = "utf8bom";
+    else {
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(body);
+        encoding = "utf8";
+      } catch {
+        encoding = "gb18030";
+      }
+    }
+  }
+  const source = encoding === "utf8bom" && hasUtf8Bom ? body.subarray(3) : body;
+  const content = iconv.decode(source, encoding === "utf8bom" ? "utf8" : encoding);
+  return { content, encoding, bom: encoding === "utf8bom" && hasUtf8Bom };
+}
+
+function encodeRemoteText(content, encoding) {
+  const selected = normalizeTextEncoding(encoding, "utf8");
+  if (selected === "auto") throw new Error("保存文件前请选择明确的文本编码");
+  const text = String(content || "");
+  const codec = selected === "utf8bom" ? "utf8" : selected;
+  const body = iconv.encode(text, codec);
+  if (iconv.decode(body, codec) !== text) throw new Error(`当前内容包含 ${selected} 无法表示的字符，请改用 UTF-8 或其他编码`);
+  return selected === "utf8bom" ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), body]) : body;
+}
+
+async function readRemoteTextFile(connectionId, remotePath, requestedEncoding = "") {
   const connection = getConnection(connectionId);
-  const quotedPath = shellQuote(remotePath);
+  const quotedPath = remotePathOperand(connection, remotePath);
   const body = await runRemote(connection, `if [ ! -f ${quotedPath} ]; then echo "目标不是普通文件" >&2; exit 1; fi; head -c ${MAX_TEXT_FILE_SIZE + 1} -- ${quotedPath}`, null, 60000);
   if (body.length > MAX_TEXT_FILE_SIZE) throw new Error("文件超过 512 KB，暂不能在程序中以文本打开，请下载后处理");
   if (body.includes(0)) throw new Error("该文件包含二进制内容，无法安全地以文本编辑");
-  let content;
-  try {
-    content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
-  } catch {
-    throw new Error("该文件不是可安全编辑的 UTF-8 文本，请下载后处理");
-  }
-  return { content, size: body.length, limit: MAX_TEXT_FILE_SIZE };
+  const preferred = normalizeTextEncoding(requestedEncoding || connection.sftp_text_encoding || "auto");
+  const decoded = decodeRemoteText(body, preferred);
+  return { ...decoded, preferred_encoding: connection.sftp_text_encoding || "auto", size: body.length, limit: MAX_TEXT_FILE_SIZE };
 }
 function streamRemoteFile(connectionId, remotePath, res, req) {
   const connection = getConnection(connectionId);
   const basename = String(remotePath || "").split("/").pop() || "download";
-  const child = spawnRemote(connection, `cat -- ${shellQuote(remotePath)}`);
+  const child = spawnRemote(connection, `cat -- ${remotePathOperand(connection, remotePath)}`);
   let headersSent = false;
   let stderr = [];
   let aborted = false;
@@ -567,13 +623,13 @@ function streamRemoteFile(connectionId, remotePath, res, req) {
 
 async function writeRemoteFile(connectionId, remotePath, data, options: { backup?: boolean } = {}) {
   const connection = getConnection(connectionId);
-  const quotedPath = shellQuote(remotePath);
+  const quotedPath = remotePathOperand(connection, remotePath);
   let backupPath = null;
   let command = "";
   if (options.backup) {
     const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
     backupPath = `${remotePath}.bak-${stamp}-${randomBytes(4).toString("hex")}`;
-    command = `cp -p -- ${quotedPath} ${shellQuote(backupPath)} && `;
+    command = `cp -p -- ${quotedPath} ${remotePathOperand(connection, backupPath)} && `;
   }
   await runRemote(connection, `${command}cat > ${quotedPath}`, data, 60000);
   return { ok: true, backup_path: backupPath };
@@ -609,6 +665,11 @@ module.exports = {
   extractRemoteArchive,
   renameRemotePath,
   readRemoteTextFile,
+  decodeRemoteText,
+  encodeRemoteText,
+  normalizeTextEncoding,
+  remotePathOperand,
+  decodeRemoteFilenameOutput,
   writeRemoteFile,
   streamRemoteFile
 };

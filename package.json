@@ -19,7 +19,7 @@
     "dist": "npm run build && electron-builder",
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
-    "regression": "npm run build && node scripts/check-frontend.js && node scripts/terminal-pty-check.js && node scripts/desktop-startup-check.js && node scripts/sftp-pagination-check.js && node scripts/update-checker-check.js && node scripts/runtime-settings-check.js && node scripts/database-reopen-check.js && node scripts/database-credential-backup-check.js && node scripts/ssh2-error-isolation-check.js && node scripts/regression-check.js",
+    "regression": "npm run build && node scripts/check-frontend.js && node scripts/terminal-pty-check.js && node scripts/websocket-frame-check.js && node scripts/sftp-encoding-check.js && node scripts/dependency-state-check.js && node scripts/desktop-startup-check.js && node scripts/sftp-pagination-check.js && node scripts/update-checker-check.js && node scripts/runtime-settings-check.js && node scripts/database-reopen-check.js && node scripts/database-credential-backup-check.js && node scripts/ssh2-error-isolation-check.js && node scripts/regression-check.js",
     "ui:smoke": "electron scripts/ui-smoke-electron.js"
   },
   "engines": {
@@ -34,6 +34,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "iconv-lite": "^0.7.3",
     "lucide": "^1.24.0",
     "socksv5": "^0.0.6",
     "ssh2": "^1.17.0"

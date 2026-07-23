@@ -5,6 +5,47 @@ const { listConnections } = require("./db");
 
 const TERMINAL_DIR = path.join(LOG_DIR, "terminals");
 const BATCH_DIR = path.join(LOG_DIR, "batch");
+const logWriteQueues = new Map();
+
+function queueLogWrite(file, data) {
+  const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8");
+  let state = logWriteQueues.get(file);
+  if (!state) {
+    state = { chunks: [], bytes: 0, timer: null, writing: null };
+    logWriteQueues.set(file, state);
+  }
+  state.chunks.push(chunk);
+  state.bytes += chunk.length;
+  if (state.bytes >= 64 * 1024) flushLogFile(file);
+  else if (!state.timer) state.timer = setTimeout(() => flushLogFile(file), 50);
+}
+
+function flushLogFile(file) {
+  const state = logWriteQueues.get(file);
+  if (!state) return Promise.resolve();
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = null;
+  if (state.writing) return state.writing;
+  if (!state.chunks.length) {
+    logWriteQueues.delete(file);
+    return Promise.resolve();
+  }
+  const body = Buffer.concat(state.chunks, state.bytes);
+  state.chunks = [];
+  state.bytes = 0;
+  state.writing = fs.promises.appendFile(file, body).catch(() => {}).finally(() => {
+    state.writing = null;
+    if (state.chunks.length) flushLogFile(file);
+    else logWriteQueues.delete(file);
+  });
+  return state.writing;
+}
+
+async function flushLogWrites() {
+  await Promise.all([...logWriteQueues.keys()].map((file) => flushLogFile(file)));
+}
+
+process.once("beforeExit", flushLogWrites);
 
 function pad(value) {
   return String(value).padStart(2, "0");
@@ -57,7 +98,7 @@ function ensureLogDirs() {
 function appendSystemLog(message) {
   ensureLogDirs();
   const line = `[${zhDateTime()}] ${message}\n`;
-  fs.appendFileSync(path.join(LOG_DIR, `system-${dayName()}.log`), line, "utf8");
+  queueLogWrite(path.join(LOG_DIR, `system-${dayName()}.log`), line);
 }
 
 function createTerminalLog(connection, title) {
@@ -73,7 +114,7 @@ function createTerminalLog(connection, title) {
 function appendTerminalLog(logFile, data) {
   if (!logFile) return;
   ensureLogDirs();
-  fs.appendFileSync(logFile, Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8"));
+  queueLogWrite(logFile, data);
 }
 
 function createBatchCommandLog(command, count) {
@@ -89,7 +130,7 @@ function createBatchCommandLog(command, count) {
 function appendBatchCommandLog(logFile, data) {
   if (!logFile) return;
   ensureLogDirs();
-  fs.appendFileSync(logFile, Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8"));
+  queueLogWrite(logFile, data);
 }
 
 function relativeLogPath(fullPath) {
@@ -176,6 +217,9 @@ function deleteLogs(paths) {
   for (const item of paths || []) {
     try {
       const resolved = resolveLogPath(item);
+      const queued = logWriteQueues.get(resolved);
+      if (queued?.timer) clearTimeout(queued.timer);
+      logWriteQueues.delete(resolved);
       fs.unlinkSync(resolved);
       deleted.push(String(item));
     } catch (error) {

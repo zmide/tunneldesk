@@ -76,11 +76,14 @@ if [ -f data/web.pid ]; then
   esac
 fi
 
-if [ ! -f node_modules/@xterm/xterm/lib/xterm.js ] || [ ! -f node_modules/@xterm/addon-fit/lib/addon-fit.js ] || [ ! -x node_modules/.bin/tsc ]; then
+if ! node scripts/dependency-state.js >/dev/null 2>&1; then
+  echo "Dependencies changed or are incomplete. Running npm install..."
   npm_install || exit 1
+  node scripts/dependency-state.js --write || exit 1
 fi
 if [ "$TUNNELDESK_WEB_ONLY" != "1" ] && [ ! -x node_modules/.bin/electron ]; then
   npm_install || exit 1
+  node scripts/dependency-state.js --write || exit 1
 fi
 npm run build >/dev/null || exit 1
 

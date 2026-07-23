@@ -59,6 +59,24 @@ function saveRecentTerminalCommand(command) {
   localStorage.setItem("recentTerminalCommands", JSON.stringify(recentTerminalCommands));
 }
 
+const terminalEncodingOptions = [
+  ["utf8", "UTF-8"], ["gb18030", "GB18030"], ["gbk", "GBK"], ["big5", "Big5"],
+  ["shift_jis", "Shift_JIS"], ["euc-kr", "EUC-KR"], ["latin1", "ISO-8859-1"]
+];
+const terminalFontOptions = [
+  ["ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", "系统等宽"],
+  ["Cascadia Mono, Cascadia Code, Consolas, monospace", "Cascadia"],
+  ["JetBrains Mono, Consolas, monospace", "JetBrains Mono"],
+  ["Consolas, monospace", "Consolas"],
+  ["Menlo, Monaco, monospace", "Menlo / Monaco"],
+  ["DejaVu Sans Mono, monospace", "DejaVu Sans Mono"],
+  ["Noto Sans Mono, monospace", "Noto Sans Mono"]
+];
+
+function terminalEncodingLabel(connection) {
+  return terminalEncodingOptions.find(([value]) => value === (connection.terminal_encoding || "utf8"))?.[1] || "UTF-8";
+}
+
 function openTerminal(id, updateTab=true, existingKey="", existingTitle="") {
   const c = selectConnection(id);
   if (!c) return;
@@ -70,7 +88,7 @@ function openTerminal(id, updateTab=true, existingKey="", existingTitle="") {
     key = `terminal-${c.id}-${next}`;
     title = `${c.name} · 终端${next > 1 ? ` #${next}` : ""}`;
   }
-  $("view-terminal").innerHTML = `<div class="terminal-toolbar"><div class="terminal-title-row"><button class="terminal-mobile-back" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="backToExplorer()">${icon("arrow-left")}<span>返回</span></button><span class="terminal-connection-dot"></span><div class="terminal-status" id="terminalStatus">${esc(c.ssh_user)}@${esc(c.ssh_host)}:${c.ssh_port}</div></div><div class="actions terminal-actions"><button class="icon-button" title="减小字体" aria-label="减小字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',-1)">${icon("minus")}</button><button class="icon-button" title="增大字体" aria-label="增大字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',1)">${icon("plus")}</button><button title="${terminalKeysVisible ? "隐藏快捷键" : "显示快捷键"}" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="toggleTerminalKeys('${key}')">${icon("keyboard")}<span>${terminalKeysVisible ? "隐藏快捷键" : "快捷键"}</span></button><button title="最近命令" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showRecentTerminalCommands('${key}')">${icon("history")}<span>最近命令</span></button><button title="重新连接" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="reconnectTerminal(${c.id}, '${key}')">${icon("refresh-cw")}<span>重连</span></button>${connectionToggleButton(c).replace("<button ", "<button onpointerdown=\"keepTerminalKeyboardClosed(event)\" ")}</div></div>${renderTerminalKeys(key)}<div id="terminalMount" class="terminal-box"></div><div class="terminal-mobile-composer"><input id="terminalMobileInput" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入命令" onkeydown="handleMobileTerminalInput(event,'${key}')"><button class="primary icon-button" title="发送命令" onclick="sendMobileTerminalInput('${key}')">${icon("send")}</button></div>`;
+  $("view-terminal").innerHTML = `<div class="terminal-toolbar"><div class="terminal-title-row"><button class="terminal-mobile-back" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="backToExplorer()">${icon("arrow-left")}<span>返回</span></button><span class="terminal-connection-dot"></span><div class="terminal-status" id="terminalStatus">${esc(c.ssh_user)}@${esc(c.ssh_host)}:${c.ssh_port}</div></div><div class="actions terminal-actions"><button class="icon-button" title="打开此连接的 SFTP" aria-label="打开此连接的 SFTP" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="openSftp(${c.id})">${icon("folder-open")}</button><button class="icon-button" title="减小字体（Ctrl+滚轮）" aria-label="减小字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',-1)">${icon("minus")}</button><button class="icon-button" title="增大字体（Ctrl+滚轮）" aria-label="增大字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',1)">${icon("plus")}</button><button class="terminal-dropdown-button" title="切换终端编码" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showTerminalEncodingMenu(event,'${key}',${c.id})">${icon("languages")}<span>${esc(terminalEncodingLabel(c))}</span>${icon("chevron-down")}</button><button class="terminal-dropdown-button" title="切换终端字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showTerminalFontMenu(event,'${key}',${c.id})">${icon("type")}<span>字体</span>${icon("chevron-down")}</button><button title="${terminalKeysVisible ? "隐藏快捷键" : "显示快捷键"}" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="toggleTerminalKeys('${key}')">${icon("keyboard")}<span>${terminalKeysVisible ? "隐藏快捷键" : "快捷键"}</span></button><button title="最近命令" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showRecentTerminalCommands('${key}')">${icon("history")}<span>最近命令</span></button><button title="重新连接" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="reconnectTerminal(${c.id}, '${key}')">${icon("refresh-cw")}<span>重连</span></button>${connectionToggleButton(c).replace("<button ", "<button onpointerdown=\"keepTerminalKeyboardClosed(event)\" ")}</div></div>${renderTerminalKeys(key)}<div id="terminalMount" class="terminal-box"></div><div class="terminal-mobile-composer"><input id="terminalMobileInput" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入命令" onkeydown="handleMobileTerminalInput(event,'${key}')"><button class="primary icon-button" title="发送命令" onclick="sendMobileTerminalInput('${key}')">${icon("send")}</button></div>`;
   setWorkspace(title, `${c.ssh_user}@${c.ssh_host}:${c.ssh_port}`, "terminal", key, updateTab, true, {kind:"terminal", id:c.id});
   attachTerminal(c, key).catch(error => {
     const mount = $("terminalMount");
@@ -90,8 +108,8 @@ async function attachTerminal(c, key) {
     const term = new TerminalClass({
       cursorBlink:true,
       convertEol:true,
-      fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",
-      fontSize:terminalFontSize,
+      fontFamily:c.terminal_font_family || "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontSize:Number(c.terminal_font_size) || 13,
       theme:{
         background:"#0f1720",
         foreground:"#d1e7dd",
@@ -123,12 +141,24 @@ async function attachTerminal(c, key) {
   else session.term.open(mount);
   observeTerminalBox(session);
   enableTerminalTouchScroll(session);
+  enableTerminalFontWheel(session, key);
   setTimeout(()=>{
     try { session.fit.fit(); } catch {}
     if (!isMobileLayout()) try { session.term.focus(); } catch {}
     if (!session.socket) connectTerminal(c, key);
     scheduleTerminalFit();
   }, 0);
+}
+
+function enableTerminalFontWheel(session, key) {
+  const box = session.term?.element?.closest?.(".terminal-box");
+  if (!box || session.fontWheelEnabled) return;
+  session.fontWheelEnabled = true;
+  box.addEventListener("wheel", event => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    changeTerminalFont(key, event.deltaY < 0 ? 1 : -1);
+  }, {passive:false});
 }
 
 function observeTerminalBox(session) {
@@ -303,12 +333,104 @@ function currentTerminalPromptCommand(session) {
 }
 
 function changeTerminalFont(key, delta) {
-  terminalFontSize = Math.max(10, Math.min(24, terminalFontSize + delta));
-  localStorage.setItem("terminalFontSize", String(terminalFontSize));
   const session = terminalSessions.get(key);
   if (!session) return;
-  session.term.options.fontSize = terminalFontSize;
+  const size = Math.max(10, Math.min(32, Number(session.term.options.fontSize || 13) + delta));
+  session.term.options.fontSize = size;
+  const connection = connections.find(item => item.id === session.id);
+  if (connection) {
+    connection.terminal_font_size = size;
+    scheduleTerminalPreferencesSave(connection);
+  }
   setTimeout(() => { try { session.fit.fit(); } catch {} }, 0);
+}
+
+const terminalPreferencesSaveTimers = new Map();
+
+function scheduleTerminalPreferencesSave(connection) {
+  clearTimeout(terminalPreferencesSaveTimers.get(connection.id));
+  terminalPreferencesSaveTimers.set(connection.id, setTimeout(() => {
+    terminalPreferencesSaveTimers.delete(connection.id);
+    api(`/api/connections/${connection.id}/terminal-preferences`, {
+      method:"POST",
+      body:JSON.stringify({
+        terminal_encoding:connection.terminal_encoding || "utf8",
+        terminal_font_family:connection.terminal_font_family,
+        terminal_font_size:connection.terminal_font_size
+      })
+    }).catch(error => notify(`终端设置保存失败：${error.message}`, "error"));
+  }, 300));
+}
+
+function focusTerminalSession(key) {
+  const session = terminalSessions.get(key);
+  setTimeout(() => {
+    try { session?.term.focus(); } catch {}
+  }, 0);
+}
+
+function showTerminalEncodingMenu(event, key, connectionId) {
+  const connection = connections.find(item => item.id === connectionId);
+  if (!connection) return;
+  const current = connection.terminal_encoding || "utf8";
+  showActionMenu(event, terminalEncodingOptions.map(([value,label]) => ({
+    label,
+    icon:value === current ? "check" : "languages",
+    run:()=>applyTerminalPreferences(key, connectionId, {terminal_encoding:value}, `编码已切换为 ${label}`)
+  })));
+}
+
+function showTerminalFontMenu(event, key, connectionId) {
+  const connection = connections.find(item => item.id === connectionId);
+  if (!connection) return;
+  const current = connection.terminal_font_family || terminalFontOptions[0][0];
+  showActionMenu(event, [
+    ...terminalFontOptions.map(([value,label]) => ({
+      label,
+      icon:value === current ? "check" : "type",
+      run:()=>applyTerminalPreferences(key, connectionId, {terminal_font_family:value}, `终端字体已切换为 ${label}`)
+    })),
+    {separator:true},
+    {label:"自定义字体…", icon:"pencil", run:()=>setCustomTerminalFont(key, connectionId)}
+  ]);
+}
+
+async function setCustomTerminalFont(key, connectionId) {
+  const connection = connections.find(item => item.id === connectionId);
+  if (!connection) return;
+  const value = await inputModal("自定义终端字体", "字体名称或字体栈", connection.terminal_font_family || terminalFontOptions[0][0]);
+  if (value) await applyTerminalPreferences(key, connectionId, {terminal_font_family:value}, "自定义终端字体已保存");
+  else focusTerminalSession(key);
+}
+
+async function applyTerminalPreferences(key, connectionId, changes, successText="终端设置已保存") {
+  const connection = connections.find(item => item.id === connectionId);
+  if (!connection) return;
+  try {
+    const settings = await api(`/api/connections/${connectionId}/terminal-preferences`, {
+      method:"POST",
+      body:JSON.stringify({
+        terminal_encoding:changes.terminal_encoding ?? connection.terminal_encoding ?? "utf8",
+        terminal_font_family:changes.terminal_font_family ?? connection.terminal_font_family ?? terminalFontOptions[0][0],
+        terminal_font_size:changes.terminal_font_size ?? connection.terminal_font_size ?? 13
+      })
+    });
+    Object.assign(connection, settings);
+    for (const activeSession of terminalSessions.values()) {
+      if (activeSession.id !== connectionId) continue;
+      activeSession.term.options.fontFamily = settings.terminal_font_family;
+      activeSession.term.options.fontSize = settings.terminal_font_size;
+      if (activeSession.socket?.readyState === WebSocket.OPEN) {
+        activeSession.socket.send(JSON.stringify({type:"terminal-encoding", encoding:settings.terminal_encoding}));
+      }
+      setTimeout(() => { try { activeSession.fit.fit(); } catch {} }, 0);
+    }
+    const encodingButton = document.querySelector(`button[onclick*="showTerminalEncodingMenu"][onclick*="'${key}'"] span`);
+    if (encodingButton) encodingButton.textContent = terminalEncodingLabel(connection);
+    notify(successText, "success");
+  } finally {
+    focusTerminalSession(key);
+  }
 }
 
 function terminalBufferText(session) {
@@ -363,6 +485,7 @@ function connectTerminal(c, key) {
   const tab = tabs.find(item => item.key === key);
   const title = tab?.title || `${c.name} · 终端`;
   const socket = new WebSocket(`${protocol}://${location.host}/ws/terminal?id=${encodeURIComponent(c.id)}&cols=${session.term.cols || 80}&rows=${session.term.rows || 24}&title=${encodeURIComponent(title)}`);
+  socket.binaryType = "arraybuffer";
   session.socket = socket;
   session.connected = false;
   session.term.writeln(`连接 ${c.ssh_user}@${c.ssh_host}:${c.ssh_port} ...`);
@@ -372,7 +495,7 @@ function connectTerminal(c, key) {
     if (status && activeTabKey === key) status.textContent = `${c.ssh_user}@${c.ssh_host}:${c.ssh_port} · 已连接`;
   });
   socket.addEventListener("message", event => {
-    session.term.write(event.data);
+    session.term.write(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data);
     if (isMobileLayout()) scheduleTerminalFit();
   });
   socket.addEventListener("close", () => {

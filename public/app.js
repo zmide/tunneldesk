@@ -21,6 +21,8 @@ let connectionSearch = localStorage.getItem("connectionSearch") || "";
 let connectionBulkMode = false;
 const selectedConnectionIds = new Set();
 let logSearch = "";
+let logViewerState = null;
+let logSearchTimer = null;
 const healthResults = new Map();
 if (!localStorage.getItem("terminalKeysDefaultCollapsedV2")) {
   localStorage.setItem("terminalKeysVisible", "0");

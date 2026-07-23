@@ -52,7 +52,7 @@ const {
   all,
   closeDatabase,
   reopenDatabase,
-  exportDatabaseBuffer
+  exportDatabaseFile
 } = require("./db");
 const {
   listIdentityFiles,
@@ -86,13 +86,28 @@ const { handleTerminalUpgrade, closeAllTerminals } = require("./terminal");
 const { deleteCommandTemplate, handleBatchCommandUpgrade, listCommandTemplates, saveCommandTemplate, updateCommandTemplate } = require("./commands");
 const { clearRemoteRecycleItems, copyRemotePaths, createRemoteFile, deleteRemotePath, deleteRemoteRecycleItem, encodeRemoteText, extractRemoteArchive, invalidateRemoteDirectoryCache, listRemoteDir, listRemoteRecycleItems, makeRemoteDir, moveRemotePaths, normalizeRemotePermissionRequest, readRemoteTextFile, recycleRemotePath, renameRemotePath, restoreRemoteRecycleItem, setRemotePermissions, writeRemoteFile, streamRemoteFile } = require("./sftp");
 const { cancelSftpJob, clearFinishedSftpJobs, compressJob, copyJob, crossCopyJob, deleteSftpJob, extractJob, getSftpJobFile, listSftpJobs, moveJob, pauseSftpJob, resumeSftpJob, startDownloadJob, startUploadJob } = require("./sftp-jobs");
-const { appendSystemLog, deleteLogs, listLogs, readLog, readRawLog } = require("./logs");
+const {
+  appendSystemLog,
+  deleteLogs,
+  enforceConfiguredLogRetention,
+  getLogSettings,
+  listLogs,
+  readLog,
+  readLogWindow,
+  readRawLog,
+  updateLogSettings
+} = require("./logs");
 const { listNotifications, notifyEvent } = require("./notifications");
-const { authRequired, isAuthenticated, isLocalRequest, login, logout, publicSecuritySettings, readSecuritySettings, resetWebAccessSecurity, sameOrigin, secureHeaders, setPassword, setToken, updateSecurityOptions, writeSecuritySettings } = require("./security");
+const { AuthenticationError, authRequired, createSession, isAuthenticated, isLocalRequest, login, logout, publicSecuritySettings, readSecuritySettings, resetWebAccessSecurity, sameOrigin, secureHeaders, sessionCookie, setPassword, setToken, updateSecurityOptions, writeSecuritySettings } = require("./security");
 const { disableEncryption, enableEncryption, encryptionReady, encryptText, lockEncryption, unlockEncryption } = require("./crypto-store");
 const { createConfigSnapshot, deleteConfigSnapshot, listConfigSnapshots, restoreConfigSnapshotById } = require("./config-snapshots");
 const { ptyRuntimeStatus } = require("./pty-runtime");
 const { createUpdateChecker } = require("./update-checker");
+const { UpdateInstaller } = require("./update-installer");
+const { createDatabaseBundleHeader, DatabaseTransferStore } = require("./database-transfer");
+const { handleLogRoutes } = require("./routes/log-routes");
+const { handlePublicAuthRoutes, handleSecurityRoutes } = require("./routes/security-routes");
+const { handleUpdateRoutes } = require("./routes/update-routes");
 const {
   MAX_PORT_FALLBACKS,
   availableListenHosts,
@@ -107,6 +122,7 @@ const {
 const PACKAGE_ROOT = path.resolve(PUBLIC_DIR, "..");
 const STARTUP_STATUS_FILE = path.join(DATA_DIR, "startup-status.json");
 let startupStatus: any = { state:"starting", started_at:Date.now(), local_url:"", lan_urls:[], autostart:{ok:0,failed:0,errors:[]}, restore:{ok:0,failed:0,errors:[]} };
+const databaseTransferStore = new DatabaseTransferStore(DATA_DIR);
 const updateChecker = createUpdateChecker({
   dataDir: DATA_DIR,
   packagePath: path.join(PACKAGE_ROOT, "package.json"),
@@ -121,6 +137,7 @@ const updateChecker = createUpdateChecker({
     }, { cooldown_ms: 0 });
   }
 });
+const updateInstaller = new UpdateInstaller(DATA_DIR);
 
 function aboutInfo() {
   const packageJson = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8"));
@@ -281,22 +298,6 @@ async function inspectServer(connectionId) {
     checked_at: Date.now(),
     output: output || (result.status === 0 ? "巡检完成，无输出" : `巡检失败，退出码 ${result.status}`)
   };
-}
-
-function withDatabaseBuffer(body, callback) {
-  if (body.length < 16) throw new Error("数据库文件为空或无效");
-  if (!body.subarray(0, 16).toString("utf8").startsWith("SQLite format 3")) throw new Error("请选择 SQLite 数据库备份文件");
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const temp = path.join(DATA_DIR, `restore-check-${process.pid}-${Date.now()}.db`);
-  fs.writeFileSync(temp, body);
-  let tempDb = null;
-  try {
-    tempDb = new DatabaseSync(temp);
-    return callback(tempDb);
-  } finally {
-    try { tempDb?.close(); } catch {}
-    try { fs.unlinkSync(temp); } catch {}
-  }
 }
 
 function connectionRowsFromBackup(tempDb) {
@@ -476,17 +477,17 @@ function normalizeCredentialBindings(value) {
   return bindings;
 }
 
-function inspectRestoreDatabase(body) {
-  const payload = parseRestorePayload(body);
-  return withDatabaseBuffer(payload.database, (tempDb) => {
+function inspectRestoreDatabaseFile(databasePath, security = null, credentialBindings = [], identityBindings = []) {
+  const tempDb = new DatabaseSync(databasePath);
+  try {
     const rows = connectionRowsFromBackup(tempDb);
-    const requestedCredentials = normalizeCredentialBindings(payload.credential_bindings);
+    const requestedCredentials = normalizeCredentialBindings(credentialBindings);
     const keyRows = rows.filter((row) => {
       const requested = requestedCredentials.get(Number(row.id));
       return requested?.auth_type === "key" || (requested?.auth_type !== "password" && String(row.auth_type || "key") !== "password" && String(row.identity_file || "").trim());
     });
     const requestedIdentities = [
-      ...(Array.isArray(payload.identity_bindings) ? payload.identity_bindings : []),
+      ...(Array.isArray(identityBindings) ? identityBindings : []),
       ...[...requestedCredentials.values()].filter((item) => item.auth_type === "key" && item.identity_path).map((item) => ({connection_id:item.connection_id, identity_path:item.identity_path}))
     ];
     const identities = identityTargetMap(keyRows, requestedIdentities);
@@ -519,50 +520,14 @@ function inspectRestoreDatabase(body) {
       mapped_identities: identities.mappings,
       available_identities: listIdentityFiles(),
       upload_directory: PROJECT_SSH_DIR,
-      encrypted_bundle: Boolean(payload.security?.encryption_enabled),
-      password_replacement_allowed: payload.security
-        ? !Boolean(payload.security.encryption_enabled)
+      encrypted_bundle: Boolean(security?.encryption_enabled),
+      password_replacement_allowed: security
+        ? !Boolean(security.encryption_enabled)
         : (!readSecuritySettings().encryption_enabled || encryptionReady())
     };
-  });
-}
-
-function parseRestorePayload(body) {
-  try {
-    const parsed = JSON.parse(body.toString("utf8"));
-    if (parsed && parsed.type === "tunneldesk-restore-request-v1" && parsed.payload_base64) {
-      const nested = parseRestorePayload(Buffer.from(parsed.payload_base64, "base64"));
-      return {
-        ...nested,
-        identity_bindings: Array.isArray(parsed.identity_bindings) ? parsed.identity_bindings : [],
-        credential_bindings: Array.isArray(parsed.credential_bindings) ? parsed.credential_bindings : []
-      };
-    }
-    if (parsed && parsed.type === "tunneldesk-backup-v1" && parsed.database_base64) {
-      return {
-        database: Buffer.from(parsed.database_base64, "base64"),
-        security: parsed.security || null,
-        identity_bindings: [],
-        credential_bindings: []
-      };
-    }
-  } catch {}
-  return { database: body, security: null, identity_bindings: [], credential_bindings: [] };
-}
-
-function backupBundle() {
-  if (!fs.existsSync(DB_PATH)) throw new Error("Database not found");
-  const security = readSecuritySettings();
-  return {
-    type: "tunneldesk-backup-v1",
-    created_at: new Date().toISOString(),
-    database_base64: fs.readFileSync(DB_PATH).toString("base64"),
-    security: {
-      encryption_enabled: Boolean(security.encryption_enabled),
-      encryption_salt: security.encryption_salt || "",
-      encryption_check: security.encryption_check || ""
-    }
-  };
+  } finally {
+    tempDb.close();
+  }
 }
 
 function normalizeRestoredCredentials(dbPath, identityBindings = [], credentialBindings = [], encryptedBundle = false, encryptionEnabled = false) {
@@ -649,17 +614,14 @@ function serveStatic(req, res, pathname) {
 
 async function handleApi(req, res, pathname) {
   if (!sameOrigin(req)) return sendJson(res, { error: "Forbidden" }, 403);
-  if (req.method === "GET" && pathname === "/api/auth/status") return sendJson(res, publicSecuritySettings(req));
-  if (req.method === "POST" && pathname === "/api/auth/login") {
-    const data = await readJson(req);
-    const token = login(data.password || "");
-    return send(res, 200, { ok: true }, { "Set-Cookie": `td_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200` });
-  }
+  const securityRouteDependencies = {
+    AuthenticationError, createSession, decryptStoredConnectionSecrets, disableEncryption, enableEncryption,
+    encryptStoredConnectionSecrets, login, logout, publicSecuritySettings, readJson, readSecuritySettings,
+    send, sendJson, sessionCookie, setPassword, setToken, unlockEncryption, updateSecurityOptions
+  };
+  if (await handlePublicAuthRoutes(req, res, pathname, securityRouteDependencies)) return;
   if (!isAuthenticated(req)) return sendJson(res, { error: "Unauthorized" }, 401);
-  if (req.method === "POST" && pathname === "/api/auth/logout") {
-    logout(req);
-    return send(res, 200, { ok: true }, { "Set-Cookie": "td_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0" });
-  }
+  if (await handleSecurityRoutes(req, res, pathname, securityRouteDependencies)) return;
   if (req.method === "GET" && pathname === "/api/about") return sendJson(res, aboutInfo());
   if (req.method === "GET" && pathname === "/api/desktop-settings") {
     const localRequest = isLocalRequest(req);
@@ -718,51 +680,16 @@ async function handleApi(req, res, pathname) {
     const data = await readJson(req);
     return sendJson(res, await checkRuntimeSettings(data), 200);
   }
-  if (req.method === "GET" && pathname === "/api/updates/status") {
-    const cached = updateChecker.status();
-    return sendJson(res, cached || {
-      current_version: String(updateChecker.packageInfo.version || "").replace(/^v/i, ""),
-      latest_version: "",
-      update_available: false,
-      checked_at: "",
-      from_cache: true,
-      source: "github"
-    });
-  }
-  if (req.method === "GET" && pathname === "/api/updates/check") {
-    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    try {
-      return sendJson(res, await updateChecker.check({ force: url.searchParams.get("force") === "1" }));
-    } catch (error) {
-      return sendJson(res, { error: error.message || "检查更新失败，请稍后重试" }, 502);
-    }
-  }
-  if (req.method === "GET" && pathname === "/api/security") return sendJson(res, publicSecuritySettings(req));
-  if (req.method === "PUT" && pathname === "/api/security") return sendJson(res, updateSecurityOptions(await readJson(req)));
-  if (req.method === "POST" && pathname === "/api/security/password") {
-    const data = await readJson(req);
-    setPassword(data.password || "");
-    return sendJson(res, publicSecuritySettings(req));
-  }
-  if (req.method === "POST" && pathname === "/api/security/token") {
-    const token = setToken();
-    return sendJson(res, { ...publicSecuritySettings(req), token });
-  }
-  if (req.method === "POST" && pathname === "/api/security/encryption/enable") {
-    const data = await readJson(req);
-    const result = enableEncryption(data.password || "");
-    const encrypted_rows = encryptStoredConnectionSecrets();
-    return sendJson(res, { ...result, encrypted_rows });
-  }
-  if (req.method === "POST" && pathname === "/api/security/encryption/unlock") return sendJson(res, unlockEncryption((await readJson(req)).password || ""));
-  if (req.method === "POST" && pathname === "/api/security/encryption/disable") {
-    const data = await readJson(req);
-    const settings = readSecuritySettings();
-    if (settings.encryption_enabled) unlockEncryption(data.password || "");
-    const decrypted_rows = settings.encryption_enabled ? decryptStoredConnectionSecrets() : 0;
-    const result = disableEncryption();
-    return sendJson(res, { ...result, decrypted_rows });
-  }
+  if (await handleUpdateRoutes(req, res, pathname, {
+    checker:updateChecker,
+    installer:updateInstaller,
+    sendJson,
+    isLocalRequest,
+    canOpenPackage:()=>Boolean(desktopIntegration?.openUpdatePackage),
+    canOpenDirectory:()=>Boolean(desktopIntegration?.openUpdateDirectory),
+    openPackage:(file)=>Promise.resolve(desktopIntegration.openUpdatePackage(file)),
+    openDirectory:(file)=>Promise.resolve(desktopIntegration.openUpdateDirectory(file))
+  })) return;
   if (req.method === "POST" && pathname === "/api/shutdown") {
     if (!isLocalRequest(req)) return sendJson(res, { error: "Forbidden" }, 403);
     sendJson(res, { ok: true });
@@ -779,7 +706,10 @@ async function handleApi(req, res, pathname) {
     const data = await readJson(req);
     return sendJson(res, repairIdentityFile(data.path || ""));
   }
-  if (req.method === "GET" && pathname === "/api/logs") return sendJson(res, listLogs());
+  if (await handleLogRoutes(req, res, pathname, {
+    deleteLogs, enforceConfiguredLogRetention, getLogSettings, listLogs, readJson, readLog, readLogWindow,
+    readRawLog, send, sendJson, updateLogSettings
+  })) return;
   if (req.method === "GET" && pathname === "/api/diagnostics/runtime") return sendJson(res, runtimeDiagnostics());
   if (req.method === "GET" && pathname === "/api/startup-status") return sendJson(res, startupStatus);
   if (req.method === "GET" && pathname === "/api/config-snapshots") return sendJson(res, listConfigSnapshots());
@@ -801,101 +731,146 @@ async function handleApi(req, res, pathname) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     return sendJson(res, listNotifications(Number(url.searchParams.get("since") || 0)));
   }
-  if (req.method === "GET" && pathname === "/api/logs/read") {
-    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    const raw = url.searchParams.get("raw") === "1";
-    return send(res, 200, raw ? readRawLog(url.searchParams.get("path") || "") : readLog(url.searchParams.get("path") || ""), { "Content-Type": "text/plain; charset=utf-8" });
-  }
   if (req.method === "GET" && pathname === "/api/backup/database") {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const includePasswords = url.searchParams.get("include_passwords") === "1";
-    const body = exportDatabaseBuffer(includePasswords);
+    const exported = exportDatabaseFile(includePasswords);
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
-      "Content-Length": body.length,
+      "Content-Length": exported.size,
       "Content-Disposition": `attachment; filename="tunneldesk-${Date.now()}${includePasswords ? "-with-passwords" : ""}.db"`,
-      "X-TunnelDesk-Passwords-Included": includePasswords ? "1" : "0"
+      "X-TunnelDesk-Passwords-Included": includePasswords ? "1" : "0",
+      ...secureHeaders()
     });
-    res.end(body);
+    const stream = fs.createReadStream(exported.path);
+    const cleanup = () => exported.cleanup();
+    stream.on("error", error => res.destroy(error));
+    stream.on("close", cleanup);
+    res.on("close", cleanup);
+    stream.pipe(res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/backup/bundle") {
-    const body = Buffer.from(JSON.stringify(backupBundle(), null, 2), "utf8");
+    const security = readSecuritySettings();
+    const exported = exportDatabaseFile(true);
+    const header = createDatabaseBundleHeader({
+      type: "tunneldesk-backup-v2",
+      created_at: new Date().toISOString(),
+      security: {
+        encryption_enabled: Boolean(security.encryption_enabled),
+        encryption_salt: security.encryption_salt || "",
+        encryption_check: security.encryption_check || ""
+      }
+    });
     res.writeHead(200, secureHeaders({
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Length": body.length,
-      "Content-Disposition": `attachment; filename="tunneldesk-backup-${Date.now()}.tdbackup.json"`
+      "Content-Type": "application/octet-stream",
+      "Content-Length": header.length + exported.size,
+      "Content-Disposition": `attachment; filename="tunneldesk-backup-${Date.now()}.tdbackup"`
     }));
-    res.end(body);
+    res.write(header);
+    const stream = fs.createReadStream(exported.path);
+    const cleanup = () => exported.cleanup();
+    stream.on("error", error => res.destroy(error));
+    stream.on("close", cleanup);
+    res.on("close", cleanup);
+    stream.pipe(res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/restore/database/check") {
-    const body = await readBody(req);
-    return sendJson(res, inspectRestoreDatabase(body));
-  }
-  if (req.method === "POST" && pathname === "/api/restore/database") {
-    const body = await readBody(req);
-    const payload = parseRestorePayload(body);
-    inspectRestoreDatabase(body);
-    createConfigSnapshot("恢复数据库前自动快照");
-    const previousSecurity = readSecuritySettings();
-    stopAllForwards();
-    closeDatabase();
-    const backup = `${DB_PATH}.bak-${Date.now()}`;
-    const clearDatabaseSidecars = () => {
-      for (const file of [`${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
-        try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch {}
-      }
-    };
-    if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, backup);
+    let stage = null;
     try {
-      clearDatabaseSidecars();
-      fs.writeFileSync(DB_PATH, payload.database);
-      if (payload.security) {
-        writeSecuritySettings({
-          encryption_enabled: Boolean(payload.security.encryption_enabled),
-          encryption_salt: payload.security.encryption_salt || "",
-          encryption_check: payload.security.encryption_check || ""
-        });
-        lockEncryption();
-      }
-      const identities = normalizeRestoredCredentials(
-        DB_PATH,
-        payload.identity_bindings,
-        payload.credential_bindings,
-        Boolean(payload.security?.encryption_enabled),
-        Boolean(readSecuritySettings().encryption_enabled)
+      stage = await databaseTransferStore.stage(req, String(req.headers["x-tunneldesk-filename"] || "backup.db"));
+      const inspection = inspectRestoreDatabaseFile(
+        stage.database_path,
+        stage.security,
+        stage.legacy_credential_bindings,
+        stage.legacy_identity_bindings
       );
-      reopenDatabase();
       return sendJson(res, {
-        ok: true,
-        backup,
-        restart_required: false,
-        database_reopened: true,
-        encrypted_bundle: Boolean(payload.security?.encryption_enabled),
-        missing_identities: identities.missing,
-        unresolved_identities: identities.unresolved,
-        encrypted_identities: identities.encrypted,
-        mapped_identities: identities.mappings
+        ...inspection,
+        restore_token: stage.token,
+        restore_format: stage.format,
+        upload_expires_at: stage.expires_at
       });
     } catch (error) {
-      try {
-        closeDatabase();
-        clearDatabaseSidecars();
-        if (fs.existsSync(backup)) fs.copyFileSync(backup, DB_PATH);
-        writeSecuritySettings(previousSecurity);
-        lockEncryption();
-        reopenDatabase();
-      } catch (rollbackError) {
-        console.error(`database restore rollback failed: ${rollbackError.message}`);
-      }
+      if (stage) databaseTransferStore.discard(stage);
       throw error;
     }
   }
-  if (req.method === "POST" && pathname === "/api/logs/delete") {
+  if (req.method === "DELETE" && pathname === "/api/restore/database/stage") {
     const data = await readJson(req);
-    const result = deleteLogs(data.paths || []);
-    return sendJson(res, result);
+    databaseTransferStore.discard(String(data.restore_token || ""));
+    return sendJson(res, { ok: true });
+  }
+  if (req.method === "POST" && pathname === "/api/restore/database") {
+    const data = await readJson(req);
+    const stage = databaseTransferStore.take(String(data.restore_token || ""));
+    const credentialBindings = Array.isArray(data.credential_bindings) && data.credential_bindings.length
+      ? data.credential_bindings
+      : stage.legacy_credential_bindings;
+    const identityBindings = Array.isArray(data.identity_bindings) && data.identity_bindings.length
+      ? data.identity_bindings
+      : stage.legacy_identity_bindings;
+    const previousSecurity = readSecuritySettings();
+    try {
+      const identities = normalizeRestoredCredentials(
+        stage.database_path,
+        identityBindings,
+        credentialBindings,
+        Boolean(stage.security?.encryption_enabled),
+        Boolean(!stage.security && previousSecurity.encryption_enabled)
+      );
+      createConfigSnapshot("恢复数据库前自动快照");
+      stopAllForwards();
+      closeDatabase();
+      const backup = `${DB_PATH}.bak-${Date.now()}`;
+      const clearDatabaseSidecars = () => {
+        for (const file of [`${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+          try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch {}
+        }
+      };
+      if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, backup);
+      try {
+        clearDatabaseSidecars();
+        fs.copyFileSync(stage.database_path, DB_PATH);
+        if (stage.security) {
+          writeSecuritySettings({
+            encryption_enabled: Boolean(stage.security.encryption_enabled),
+            encryption_salt: stage.security.encryption_salt || "",
+            encryption_check: stage.security.encryption_check || ""
+          });
+          lockEncryption();
+        }
+        reopenDatabase();
+        clearConnectionHealthCache();
+        return sendJson(res, {
+          ok: true,
+          backup,
+          restart_required: false,
+          database_reopened: true,
+          restore_format: stage.format,
+          encrypted_bundle: Boolean(stage.security?.encryption_enabled),
+          missing_identities: identities.missing,
+          unresolved_identities: identities.unresolved,
+          encrypted_identities: identities.encrypted,
+          mapped_identities: identities.mappings
+        });
+      } catch (error) {
+        try {
+          closeDatabase();
+          clearDatabaseSidecars();
+          if (fs.existsSync(backup)) fs.copyFileSync(backup, DB_PATH);
+          writeSecuritySettings(previousSecurity);
+          lockEncryption();
+          reopenDatabase();
+        } catch (rollbackError) {
+          console.error(`database restore rollback failed: ${rollbackError.message}`);
+        }
+        throw error;
+      }
+    } finally {
+      databaseTransferStore.discard(stage);
+    }
   }
   if (req.method === "GET" && pathname === "/api/connections") return sendJson(res, listConnections());
   if (req.method === "GET" && pathname === "/api/command-templates") return sendJson(res, listCommandTemplates());

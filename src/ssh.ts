@@ -2,10 +2,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const net = require("node:net");
 const { spawn, spawnSync } = require("node:child_process");
-const { SSH_BIN, SSH_DIR, USER_SSH_DIR, LOG_DIR, DATA_DIR, DEFAULT_EXTRA_ARGS } = require("./config");
+const { SSH_BIN, SSH_DIR, USER_SSH_DIR, LOG_DIR, DATA_DIR } = require("./config");
 const { all, getConnection, getForward, run, now, pidRunning } = require("./db");
 const { notifyIssue, notifyRecovery } = require("./notifications");
 const { isPasswordConnection, runPasswordCommand, startPasswordForward } = require("./ssh2-client");
+const { effectiveExtraArgs, splitArgs } = require("./ssh-command");
+const { diagnoseSshError } = require("./ssh-diagnostics");
 
 const RESTORE_STATE_FILE = path.join(DATA_DIR, "forward-state.json");
 let healthMonitorTimer: any = null;
@@ -13,28 +15,6 @@ let healthMonitorBusy = false;
 let healthMonitorTask: Promise<any> | null = null;
 const securedKeyCache = new Set();
 const passwordForwards = new Map();
-
-function splitArgs(text) {
-  if (!text) return [];
-  const args = [];
-  const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
-  let match;
-  while ((match = re.exec(text))) args.push((match[1] ?? match[2] ?? match[3]).replace(/\\(["'])/g, "$1"));
-  return args;
-}
-
-function effectiveExtraArgs(text) {
-  const args = splitArgs(text);
-  const joined = args.join(" ").toLowerCase();
-  const defaults = splitArgs(DEFAULT_EXTRA_ARGS);
-  for (let i = 0; i < defaults.length; i += 1) {
-    if (defaults[i] === "-o" && defaults[i + 1]) {
-      const name = defaults[i + 1].split("=")[0].toLowerCase();
-      if (!joined.includes(name)) args.push("-o", defaults[i + 1]);
-    }
-  }
-  return args;
-}
 
 function looksLikePrivateKey(file) {
   try {
@@ -110,51 +90,6 @@ function securePrivateKeyPermissions(file) {
     spawnSync("icacls", [file, "/remove:g", "*S-1-5-11", "*S-1-5-32-545", "*S-1-1-0"], { encoding: "utf8" });
   } catch {}
   if (cacheKey) securedKeyCache.add(cacheKey);
-}
-
-function diagnoseSshError(message) {
-  const text = String(message || "").trim();
-  const lower = text.toLowerCase();
-  const suggestions = [];
-  let reason = "SSH 操作失败";
-  if (/unprotected private key|bad permissions|permissions.*too open/.test(lower)) {
-    reason = "私钥权限过宽";
-    suggestions.push("在密钥管理中执行一键修复权限。");
-    suggestions.push("Windows 下确保私钥只允许当前用户、SYSTEM 或 Administrators 读取。");
-  } else if (/permission denied/.test(lower)) {
-    reason = "SSH 认证失败";
-    suggestions.push("检查用户名、私钥是否正确。");
-    suggestions.push("确认服务器允许该用户使用公钥登录。");
-  } else if (/connection timed out|operation timed out|connecttimeout/.test(lower)) {
-    reason = "连接超时";
-    suggestions.push("检查主机地址、端口、防火墙和网络连通性。");
-  } else if (/connection refused/.test(lower)) {
-    reason = "连接被拒绝";
-    suggestions.push("检查 SSH 服务是否运行，以及端口是否正确。");
-  } else if (/could not resolve hostname|name or service not known|getaddrinfo/.test(lower)) {
-    reason = "主机名解析失败";
-    suggestions.push("检查 SSH 主机名或 DNS 配置。");
-  } else if (/address already in use|bind.*failed|端口已被占用|listen.*eaddrinuse/.test(lower)) {
-    reason = "监听端口被占用";
-    suggestions.push("更换本地监听端口，或停止占用该端口的程序。");
-  } else if (/remote port forwarding failed|administratively prohibited/.test(lower)) {
-    reason = "远程转发被服务器拒绝";
-    suggestions.push("检查服务器 sshd_config 是否允许 AllowTcpForwarding。");
-    suggestions.push("远程转发还可能需要 GatewayPorts 配置。");
-  } else if (/no such file|identity file.*not accessible/.test(lower)) {
-    reason = "私钥文件不存在或不可访问";
-    suggestions.push("重新上传私钥，或在连接配置中选择正确的私钥。");
-  } else if (/host key verification failed/.test(lower)) {
-    reason = "主机指纹校验失败";
-    suggestions.push("确认服务器指纹变化是否可信。");
-    suggestions.push("必要时清理 known_hosts 中旧记录。");
-  }
-  return {
-    reason,
-    message: text,
-    suggestions,
-    display: [reason, text, ...suggestions.map((item) => `建议：${item}`)].filter(Boolean).join("\n")
-  };
 }
 
 function identityPermissionStatus(file) {

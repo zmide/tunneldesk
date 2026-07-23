@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const { PassThrough } = require("node:stream");
 const { Client } = require("ssh2");
-const socks = require("socksv5");
+const socks = require("@pondwader/socks5-server");
 
 function isPasswordConnection(connection) {
   return String(connection?.auth_type || "key") === "password";
@@ -230,29 +230,43 @@ async function startLocalForward(client, forward, onError) {
 }
 
 async function startSocksForward(client, forward, onError) {
-  const server = socks.createServer((info, accept, deny) => {
-    client.forwardOut(info.srcAddr, info.srcPort, info.dstAddr, info.dstPort, (error, channel) => {
+  const server = socks.createServer();
+  server.setConnectionHandler((connection, sendStatus) => {
+    client.forwardOut(
+      connection.socket.remoteAddress || "127.0.0.1",
+      Number(connection.socket.remotePort || 0),
+      connection.destAddress,
+      connection.destPort,
+      (error, channel) => {
       if (error) {
         onError(error);
-        deny();
+        sendStatus("HOST_UNREACHABLE");
         return;
       }
-      const socket = accept(true);
-      if (!socket) {
-        channel.close();
-        return;
-      }
+      const socket = connection.socket;
+      sendStatus("REQUEST_GRANTED");
       socket.pipe(channel).pipe(socket);
       channel.on("error", () => socket.destroy());
-      socket.on("error", () => channel.close());
-    });
+      channel.on("close", () => socket.destroy());
+      channel.on("end", () => socket.end());
+      socket.on("error", () => {
+        try { channel.close?.(); } catch {}
+        try { channel.destroy?.(); } catch {}
+      });
+      socket.on("close", () => {
+        try { channel.close?.(); } catch {}
+        try { channel.destroy?.(); } catch {}
+      });
+      }
+    );
   });
-  server.useAuth(socks.auth.None());
+  const listener = server.server;
+  server.address = () => listener.address();
   await new Promise((resolve, reject) => {
-    server.once("error", reject);
+    listener.once("error", reject);
     server.listen(Number(forward.bind_port), String(forward.bind_host || "127.0.0.1"), () => {
-      server.removeListener("error", reject);
-      server.on("error", onError);
+      listener.removeListener("error", reject);
+      listener.on("error", onError);
       resolve(null);
     });
   });
@@ -322,5 +336,6 @@ module.exports = {
   openPasswordShell,
   runPasswordCommand,
   spawnPasswordCommand,
+  startSocksForward,
   startPasswordForward
 };

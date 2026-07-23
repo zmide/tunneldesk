@@ -103,6 +103,7 @@ async function main() {
       && releaseWorkflow.includes("TunnelDesk-linux-source-noarch")
   );
   const sftpBackend = read("src/sftp.ts");
+  const sftpEncodingSource = read("src/sftp-encoding.ts");
   const sftpFrontend = read("public/app-sftp.js");
   const sftpCss = read("public/app.css");
   ok("SFTP 目录枚举不依赖 GNU find 参数", !sftpBackend.includes("-maxdepth") && !sftpBackend.includes("-mindepth") && !sftpBackend.includes("-printf"));
@@ -122,7 +123,7 @@ async function main() {
   ok("SFTP 权限命令兼容 Linux 与 macOS", sftpBackend.includes("permissionPathOperand") && sftpBackend.includes("chgrp") && !sftpBackend.includes("chown ${recursiveFlag}${shellQuote(`${normalized.owner}:${normalized.group}`)} --") && !sftpBackend.includes("chmod ${recursiveFlag}${normalized.mode} --"));
   ok("终端返回按钮仅在移动布局显示", sftpCss.includes(".terminal-title-row > .terminal-mobile-back { display:none") && sftpCss.includes(".terminal-title-row > .terminal-mobile-back { display:inline-flex"));
   ok("终端原始字节使用二进制 WebSocket 帧", read("src/terminal.ts").includes("Buffer.isBuffer(data) ? 2 : 1") && read("src/terminal.ts").includes("sendWebSocketFrame") && read("public/app-terminal.js").includes('socket.binaryType = "arraybuffer"') && read("public/app-terminal.js").includes("new Uint8Array(event.data)"));
-  ok("SFTP 文本读取保护并支持原字节备份", sftpBackend.includes("new TextDecoder") && sftpBackend.includes("[ ! -f") && sftpBackend.includes("backup_path"));
+  ok("SFTP 文本读取保护并支持原字节备份", sftpEncodingSource.includes("new TextDecoder") && sftpBackend.includes("[ ! -f") && sftpBackend.includes("backup_path"));
   ok("密码 SSH 使用内置跨平台依赖", Boolean(packageJson.dependencies?.ssh2));
   const startBat = read("start.bat");
   const dependencyState = read("scripts/dependency-state.js");
@@ -154,6 +155,7 @@ async function main() {
   const workspaceFrontend = read("public/app-workspace.js");
   const appCss = read("public/app.css");
   const serverSource = read("src/server.ts");
+  const updateRouteSource = read("src/routes/update-routes.ts");
   const terminalSource = read("src/terminal.ts");
   const desktopSource = read("desktop/main.js");
   const appMenuSource = desktopSource.slice(desktopSource.indexOf("function buildAppMenu"), desktopSource.indexOf("function createTray"));
@@ -169,7 +171,8 @@ async function main() {
   ok("SFTP 读取响应不缓存敏感内容", read("src/server.ts").includes('"Cache-Control": "no-store"'));
   ok("SFTP 删除由服务端设置决定是否进入回收站", serverSource.includes("const recycleEnabled = readRuntimeSettings(RUNTIME_SETTINGS_FILE).sftp_recycle_bin_enabled") && serverSource.includes("await recycleRemotePath(connectionId, data.path)") && serverSource.includes('parts[4] === "trash" && parts[5] === "restore"'));
   ok("关于页与开源许可弹窗已接入", settingsFrontend.includes('id="settings-about"') && settingsFrontend.includes("查看开源许可正文") && settingsFrontend.includes("showLicenseModal") && serverSource.includes('pathname === "/api/about"'));
-  ok("设置页支持 GitHub Releases 更新检查", settingsFrontend.includes("refreshUpdateStatus") && settingsFrontend.includes("查看 Release") && serverSource.includes('pathname === "/api/updates/check"'));
+  ok("设置页支持 GitHub Releases 更新检查", settingsFrontend.includes("refreshUpdateStatus") && settingsFrontend.includes("查看 Release") && updateRouteSource.includes('pathname === "/api/updates/check"'));
+  ok("更新完成后按当前安装类型隔离状态并提供安全操作", settingsFrontend.includes("openDownloadedUpdateDirectory") && settingsFrontend.includes("打开下载目录") && settingsFrontend.includes("重新下载") && settingsFrontend.includes("download.asset_name === download.selected_asset_name") && settingsFrontend.includes('download.package_type === "portable"') && updateRouteSource.includes('pathname === "/api/updates/open-directory"') && updateRouteSource.includes('state.package_type === "portable"') && desktopSource.includes("shell.showItemInFolder(target)") && read("src/update-installer.ts").includes("matchesCurrentTarget"));
   ok("设置与导入导出使用独立操作区", workspaceFrontend.includes('primaryView === "settings"') && workspaceFrontend.includes('primaryView === "import"') && workspaceFrontend.includes("data-explorer-section") && importFrontend.includes("scrollToImportSection"));
   const importSourceAt = indexHtml.indexOf('id="import-source"');
   const importResultsAt = indexHtml.indexOf('id="import-results"');
@@ -192,34 +195,67 @@ async function main() {
   ok("SFTP 支持跨主机流式复制", read("src/sftp-jobs.ts").includes("crossCopyJob") && read("src/sftp-jobs.ts").includes("source.stdout.pipe(target.stdin)") && read("public/app-sftp.js").includes("/sftp/cross-copy"));
   ok("终端与批量命令共享严格 WebSocket 帧解析器", terminalSource.includes("WebSocketFrameParser") && read("src/commands.ts").includes("WebSocketFrameParser") && read("src/websocket.ts").includes("客户端 WebSocket 数据帧必须掩码") && read("src/websocket.ts").includes("fragmentOpcode"));
   ok("连接列表消除转发 N+1 查询并补索引", dbSource.includes('all("SELECT * FROM connection_forwards ORDER BY connection_id,id")') && dbSource.includes("idx_connection_forwards_connection_id") && dbSource.includes("idx_connections_group_sort"));
-  ok("SFTP 状态防抖原子写入且日志使用缓冲队列", read("src/sftp-jobs.ts").includes("setTimeout(() => persistJobs(true), 400)") && read("src/sftp-jobs.ts").includes("fs.renameSync(temporary, JOBS_FILE)") && read("src/logs.ts").includes("queueLogWrite") && !read("src/logs.ts").includes("fs.appendFileSync(logFile"));
+  ok("SFTP 状态防抖原子写入且日志使用缓冲队列", read("src/sftp-jobs.ts").includes("setTimeout(() => persistJobs(true), 400)") && read("src/sftp-job-store.ts").includes("fs.renameSync(temporary, file)") && read("src/logs.ts").includes("queueLogWrite") && !read("src/logs.ts").includes("fs.appendFileSync(logFile"));
   ok("同名私钥不会绕过连接级绑定", importerSource.includes("identity_file: null") && importerSource.includes("missing_identity: Boolean(keyName)") && !importerSource.includes("identityFileMap") && serverSource.includes("const target = requested ?") && !serverSource.includes("existingByName.get(keyName)"));
   ok("私钥绑定只接受已枚举路径", serverSource.includes("allowedPaths.has(path.resolve(requested))") && serverSource.includes("私钥绑定无效，请重新选择"));
   ok("SSH config 与数据库恢复允许保留未绑定私钥", !importFrontend.includes("个连接尚未绑定私钥") && importFrontend.includes("未重新绑定的普通私钥路径会被清除") && serverSource.includes("updateIdentity.run(null, item.connection_id)") && !serverSource.includes("数据库备份中的连接尚未全部绑定私钥"));
   ok("数据库恢复后重新打开句柄并自动刷新", serverSource.includes("reopenDatabase()") && serverSource.includes("database_reopened: true") && importFrontend.includes("数据库已恢复并自动刷新") && importFrontend.includes("await loadAll()"));
-  ok("数据库迁移包同步启用或关闭加密状态", serverSource.includes("if (payload.security) {") && serverSource.includes("encryption_enabled: Boolean(payload.security.encryption_enabled)"));
+  ok("数据库迁移包同步启用或关闭加密状态", serverSource.includes("if (stage.security) {") && serverSource.includes("encryption_enabled: Boolean(stage.security.encryption_enabled)"));
   ok("导入导出按 SSH config 与数据库拆分", workspaceFrontend.includes("SSH config 导入导出") && workspaceFrontend.includes("数据库导入导出") && indexHtml.indexOf("导出 SSH config") < indexHtml.indexOf("数据库导入导出"));
   ok("设置活动栏按通用与安全职责重组", workspaceFrontend.includes('"settings-general", "settings-2", "通用设置"') && workspaceFrontend.includes('"settings-basic", "shield-check", "安全设置"') && !workspaceFrontend.includes('"settings-advanced"') && settingsFrontend.indexOf("storageSettingsPanelHtml()") < settingsFrontend.indexOf('id="settings-basic"'));
   ok("桌面设置并入程序且菜单去重", settingsFrontend.includes("desktopBehaviorPanelHtml") && settingsFrontend.includes("storageSettingsPanelHtml") && serverSource.includes('pathname === "/api/desktop-settings"') && desktopSource.includes("desktopIntegration") && !appMenuSource.includes('{ label: "设置"') && !trayMenuSource.includes('{ label: "设置"') && !trayMenuSource.includes("备份配置数据库"));
   ok("Web 数据路径支持跨根目录浏览、安全远程管理与自动重启", settingsFrontend.includes("openStorageDirectoryBrowser") && settingsFrontend.includes("data-storage-root") && serverSource.includes('pathname === "/api/storage/directories"') && serverSource.includes("storageManagementAvailable") && serverSource.includes("!authRequired(req)") && serverSource.includes("restart-web.js") && fs.existsSync(path.join(root, "scripts/restart-web.js")) && read("src/config.ts").includes(".tunneldesk-storage.json"));
   ok("活动栏按钮整栏居中且选中线独立", appCss.includes('.activity button, .activity a { position:relative; width:100%') && appCss.includes('.activity button.active::before') && !appCss.includes('width:46px; min-height:44px;'));
-  ok("新版本红点使用会话已读状态", settingsFrontend.includes("tunneldeskUpdateReadVersion") && settingsFrontend.includes("sessionStorage") && settingsFrontend.includes("markUpdateNoticeRead") && indexHtml.includes("navSettingsUpdateDot") && serverSource.includes('pathname === "/api/updates/status"'));
+  ok("新版本提醒支持已读和按版本忽略", settingsFrontend.includes("tunneldeskUpdateReadVersion") && settingsFrontend.includes("sessionStorage") && settingsFrontend.includes("markUpdateNoticeRead") && settingsFrontend.includes("update_ignored") && settingsFrontend.includes("setUpdateVersionIgnored") && indexHtml.includes("navSettingsUpdateDot") && updateRouteSource.includes('pathname === "/api/updates/ignore"') && read("public/app-utils.js").includes('event.type === "update" && updateSettings?.update_ignored'));
+  ok("更新页按从新到旧展示最近两个正式版本", read("src/update-checker.ts").includes("release_notes: releases.slice(0, 2)") && read("src/update-checker.ts").includes("releases?per_page=10") && settingsFrontend.includes("updateReleaseNotesHtml") && settingsFrontend.includes("update.release_notes.slice(0, 2)") && settingsFrontend.includes("最近版本更新内容"));
 
   const base = (await webUrl(packageJson, licenseText)).replace(/\/$/, "");
+  try {
+    const savedLogSettings = await fetch(`${base}/api/logs/settings`, {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({retention_days:7,max_file_size_mb:1,max_total_size_mb:10,rotation_files:2})
+    }).then(response=>response.json());
+    const logs = await fetch(`${base}/api/logs`).then(response=>response.json());
+    const systemLog = logs.system?.[0];
+    const windowResult = systemLog
+      ? await fetch(`${base}/api/logs/read?path=${encodeURIComponent(systemLog.path)}&limit=4096&query=TunnelDesk`).then(response=>response.json())
+      : null;
+    ok("日志设置、分段读取和服务端搜索接口", savedLogSettings.retention_days === 7 && savedLogSettings.max_file_size_mb === 1 && savedLogSettings.max_total_size_mb === 10 && savedLogSettings.rotation_files === 2 && windowResult && typeof windowResult.text === "string" && Number.isInteger(windowResult.offset) && Array.isArray(windowResult.matches));
+  } catch (error) {
+    ok("日志设置、分段读取和服务端搜索接口", false, error.message);
+  }
   const restoreFixturePath = path.join(root, "data", `.restore-regression-${process.pid}.db`);
   let restoreFixtureDb = null;
   try {
     const { DatabaseSync } = require("node:sqlite");
     const missingKeyName = `missing-regression-${process.pid}-${Date.now()}`;
     restoreFixtureDb = new DatabaseSync(restoreFixturePath);
-    restoreFixtureDb.exec("CREATE TABLE connections (id INTEGER PRIMARY KEY, name TEXT, identity_file TEXT)");
-    const insert = restoreFixtureDb.prepare("INSERT INTO connections(id,name,identity_file) VALUES(?,?,?)");
-    for (let index = 1; index <= 12; index += 1) insert.run(index, `fixture-${index}`, `C:\\old\\.ssh\\${missingKeyName}`);
+    restoreFixtureDb.exec(`CREATE TABLE connections (
+      id INTEGER PRIMARY KEY, name TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '测试',
+      ssh_host TEXT NOT NULL, ssh_port INTEGER NOT NULL DEFAULT 22, ssh_user TEXT NOT NULL,
+      auth_type TEXT NOT NULL DEFAULT 'key', identity_file TEXT, ssh_password TEXT, tags TEXT, extra_args TEXT,
+      autostart_forwards INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    const insert = restoreFixtureDb.prepare("INSERT INTO connections(id,name,group_name,ssh_host,ssh_port,ssh_user,auth_type,identity_file,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)");
+    for (let index = 1; index <= 12; index += 1) {
+      insert.run(index, `fixture-${index}`, "测试", `fixture-${index}.invalid`, 22, "root", "key", `C:\\old\\.ssh\\${missingKeyName}`, index, index);
+    }
     restoreFixtureDb.close();
     restoreFixtureDb = null;
     const response = await fetch(`${base}/api/restore/database/check`, {method:"POST", body:fs.readFileSync(restoreFixturePath)});
     const restoreCheck = await response.json().catch(() => null);
     ok("数据库恢复检查返回分组、逐连接引用、原验证方式和默认排序", response.ok && restoreCheck?.missing_identities?.length === 1 && restoreCheck.missing_identities[0].key_name === missingKeyName && restoreCheck.missing_identities[0].connection_count === 12 && restoreCheck.missing_identities[0].connection_names?.length === 12 && restoreCheck.unresolved_identities?.length === 12 && restoreCheck.connections?.length === 12 && restoreCheck.connections.every(item => item.original_auth_type === "key" && item.sort_order === 1) && typeof restoreCheck.upload_directory === "string");
+    if (restoreCheck?.restore_token) {
+      const restoredResponse = await fetch(`${base}/api/restore/database`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({restore_token:restoreCheck.restore_token, credential_bindings:[]})
+      });
+      const restored = await restoredResponse.json().catch(()=>null);
+      const refreshed = await fetch(`${base}/api/connections`).then(item=>item.json()).catch(()=>[]);
+      ok("数据库恢复复用暂存文件、重开句柄并立即刷新", restoredResponse.ok && restored?.database_reopened === true && refreshed.length === 12 && refreshed.every(item=>item.sort_order === 1));
+    }
   } catch (error) {
     ok("数据库恢复检查返回分组、逐连接引用、原验证方式和默认排序", false, error.message);
   } finally {

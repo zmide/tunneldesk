@@ -25,6 +25,7 @@ const database = require("../dist/db");
 try {
   const migrated = database.listConnections();
   assert.deepEqual(migrated.map(item => item.sort_order), [1, 1]);
+  assert.deepEqual(migrated.map(item => [item.terminal_line_height, item.terminal_font_weight]), [[1, "normal"], [1, "normal"]]);
   const id = database.insertConnection({
     name: "reopen-check",
     group_name: "测试",
@@ -36,6 +37,26 @@ try {
   }, "");
   assert.ok(id > 0);
   assert.deepEqual(database.listConnections().map(item => item.name), ["legacy-a", "legacy-b", "reopen-check"]);
+  const display = database.updateTerminalPreferences(id, {
+    terminal_encoding: "gb18030",
+    terminal_font_family: "Cascadia Mono, monospace",
+    terminal_font_size: 16,
+    terminal_line_height: 1.4,
+    terminal_font_weight: "600"
+  });
+  assert.deepEqual(display, {
+    terminal_encoding: "gb18030",
+    terminal_font_family: "Cascadia Mono, monospace",
+    terminal_font_size: 16,
+    terminal_line_height: 1.4,
+    terminal_font_weight: "600"
+  });
+  assert.throws(() => database.updateTerminalPreferences(id, { terminal_line_height: 2.5 }), /行距/);
+  const snapshot = database.exportConfigSnapshot();
+  database.updateTerminalPreferences(id, { terminal_line_height:1.6, terminal_font_weight:"bold" });
+  database.restoreConfigSnapshot(snapshot);
+  assert.equal(database.getConnection(id).terminal_line_height, 1.4);
+  assert.equal(database.getConnection(id).terminal_font_weight, "600");
   database.updateConnection(2, {...database.getConnection(2), sort_order:2}, "");
   assert.deepEqual(database.listConnections().map(item => item.name), ["legacy-a", "reopen-check", "legacy-b"]);
   database.closeDatabase();
@@ -44,6 +65,8 @@ try {
   assert.equal(restored?.name, "reopen-check");
   assert.equal(restored?.identity_file, null);
   assert.equal(restored?.sort_order, 1);
+  assert.equal(restored?.terminal_line_height, 1.4);
+  assert.equal(restored?.terminal_font_weight, "600");
   console.log("Database close/reopen and connection ordering passed.");
 } finally {
   try { database.closeDatabase(); } catch {}

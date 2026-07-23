@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "useUnknownInCatchVariables": true
+  },
+  "files": [
+    "src/auth-protection.ts",
+    "src/database-transfer.ts",
+    "src/log-reader.ts",
+    "src/sftp-encoding.ts",
+    "src/sftp-job-store.ts",
+    "src/ssh-command.ts",
+    "src/ssh-diagnostics.ts",
+    "src/update-installer.ts",
+    "src/routes/log-routes.ts",
+    "src/routes/security-routes.ts",
+    "src/routes/update-routes.ts"
+  ],
+  "include": []
+}

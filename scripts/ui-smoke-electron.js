@@ -145,6 +145,14 @@ app.whenReady().then(async () => {
       }
       const updateDotIds = ['navSettingsUpdateDot','mobileSettingsUpdateDot','settingsExplorerUpdateDot'];
       const dotsBeforeRead = updateDotIds.map(id => ({id, found:Boolean(document.getElementById(id)), hidden:document.getElementById(id)?.hidden}));
+      updateSettings = {...updateSettings, update_ignored:true};
+      syncUpdateNoticeDots();
+      const ignoredVersionHidesNotice = !shouldShowUpdateNotice() && updateDotIds.every(id => document.getElementById(id)?.hidden === true);
+      updateSettings = {...updateSettings, latest_version:'1.0.10', update_ignored:false};
+      syncUpdateNoticeDots();
+      const newerAfterIgnoredShowsNotice = shouldShowUpdateNotice() && updateDotIds.every(id => document.getElementById(id)?.hidden === false);
+      updateSettings = {...updateSettings, latest_version:'1.0.9', update_ignored:false};
+      syncUpdateNoticeDots();
       tools.querySelector('[data-explorer-section="settings-about"]')?.click();
       await Promise.resolve();
       const aboutVisible = [...document.querySelectorAll('#view-settings .settings-group')].filter(group => !group.hidden).map(group => group.id);
@@ -153,6 +161,14 @@ app.whenReady().then(async () => {
       const storedReadVersion = sessionStorage.getItem(UPDATE_NOTICE_SESSION_KEY);
       const sameVersionStaysRead = !shouldShowUpdateNotice();
       tools.querySelector('[data-explorer-section="settings-basic"]')?.click();
+      await Promise.resolve();
+      const sessionUi = {
+        ttl:document.querySelector('#securitySessionTtlMinutes')?.value,
+        max:document.querySelector('#securitySessionMaxSessions')?.value,
+        cleanup:document.querySelector('#securitySessionCleanupMinutes')?.value,
+        active:document.querySelector('#settings-basic')?.textContent.includes('当前活动会话'),
+        save:Boolean([...document.querySelectorAll('#settings-basic button')].find(button=>button.textContent.includes('保存会话设置')))
+      };
       updateSettings = {...updateSettings, latest_version:'1.0.10'};
       syncUpdateNoticeForCurrentSection();
       const newerVersionShowsAgain = shouldShowUpdateNotice() && updateDotIds.every(id => document.getElementById(id)?.hidden === false);
@@ -210,7 +226,10 @@ app.whenReady().then(async () => {
         dotsAfterRead,
         storedReadVersion,
         sameVersionStaysRead,
+        ignoredVersionHidesNotice,
+        newerAfterIgnoredShowsNotice,
         newerVersionShowsAgain,
+        sessionUi,
         runtimeUi,
         importLabels,
         importOwnSections:JSON.stringify(importLabels) === JSON.stringify(importExpected),
@@ -283,10 +302,75 @@ app.whenReady().then(async () => {
       modal.querySelector('button[data-choice]')?.click();
       result.followupResolved = await followup === 'ok';
       const previousUpdate = updateSettings;
-      updateSettings = {current_version:'1.0.8',latest_version:'1.0.9',update_available:true,release_url:'https://github.com/zmide/tunneldesk/releases/tag/v1.0.9',published_at:'2026-07-20T00:00:00Z',checked_at:'2026-07-20T00:01:00Z',notes:'更新检查测试'};
+      updateSettings = {
+        current_version:'1.0.8',
+        latest_version:'1.0.9',
+        update_available:true,
+        release_url:'https://github.com/zmide/tunneldesk/releases/tag/v1.0.9',
+        published_at:'2026-07-20T00:00:00Z',
+        checked_at:'2026-07-20T00:01:00Z',
+        notes:'更新检查测试',
+        update_ignored:false,
+        release_notes:[
+          {version:'1.0.9', published_at:'2026-07-20T00:00:00Z', notes:'更新检查测试：新版本更新内容'},
+          {version:'1.0.8', published_at:'2026-07-19T00:00:00Z', notes:'上一版本更新内容'}
+        ],
+        download_status:{
+          state:'idle',
+          selected_asset_name:'TunnelDesk-1.0.9-windows-x64-portable.exe',
+          selected_asset_size:10485760,
+          platform:'win32',
+          arch:'x64',
+          package_type:'portable',
+          progress_percent:0,
+          can_open:true
+        }
+      };
       document.querySelector('#updateCheckArea').innerHTML = updateStatusHtml();
-      const updateLink = document.querySelector('#updateCheckArea a');
-      result.updateUi = document.querySelector('#updateCheckArea')?.textContent.includes('发现新版本 v1.0.9') && updateLink?.href === 'https://github.com/zmide/tunneldesk/releases/tag/v1.0.9';
+      const updateArea = document.querySelector('#updateCheckArea');
+      const updateLink = updateArea.querySelector('a');
+      const releaseEntries = [...updateArea.querySelectorAll('.update-release-entry')];
+      const updateCardReady = updateArea?.textContent.includes('GitHub Release 更新')
+        && updateArea.textContent.includes('TunnelDesk-1.0.9-windows-x64-portable.exe')
+        && updateArea.textContent.includes('Windows · x64 · 便携版')
+        && updateArea.textContent.includes('更新检查测试')
+        && releaseEntries.length === 2
+        && releaseEntries[0].textContent.includes('v1.0.9')
+        && releaseEntries[0].textContent.includes('新版本更新内容')
+        && releaseEntries[1].textContent.includes('v1.0.8')
+        && releaseEntries[1].textContent.includes('上一版本更新内容')
+        && Boolean(updateArea.querySelector('#updateIgnoreCurrentVersion'))
+        && updateArea.textContent.includes('提示弹窗和红点')
+        && updateArea.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') === '0'
+        && Boolean([...updateArea.querySelectorAll('button')].find(button=>button.textContent.includes('下载并校验')))
+        && updateLink?.textContent.includes('查看 Release')
+        && updateLink?.href === 'https://github.com/zmide/tunneldesk/releases/tag/v1.0.9';
+      updateSettings.download_status = {
+        ...updateSettings.download_status,
+        state:'downloaded',
+        version:'1.0.9',
+        asset_name:'TunnelDesk-1.0.9-windows-x64-portable.exe',
+        progress_percent:100,
+        can_open:true,
+        can_open_directory:true
+      };
+      updateArea.innerHTML = updateStatusHtml();
+      const portableButtons = [...updateArea.querySelectorAll('button')].map(button=>button.textContent.trim());
+      const portableActionsReady = portableButtons.includes('打开下载目录')
+        && portableButtons.includes('重新下载')
+        && !portableButtons.includes('打开已校验安装包');
+      updateSettings.download_status = {
+        ...updateSettings.download_status,
+        selected_asset_name:'TunnelDesk-1.0.9-windows-x64-installer.exe',
+        asset_name:'TunnelDesk-1.0.9-windows-x64-installer.exe',
+        package_type:'installer'
+      };
+      updateArea.innerHTML = updateStatusHtml();
+      const installerButtons = [...updateArea.querySelectorAll('button')].map(button=>button.textContent.trim());
+      const installerActionsReady = installerButtons.includes('打开已校验安装包')
+        && installerButtons.includes('打开下载目录')
+        && installerButtons.includes('重新下载');
+      result.updateUi = updateCardReady && portableActionsReady && installerActionsReady;
       updateSettings = previousUpdate;
       return result;
     } catch (error) {
@@ -540,7 +624,7 @@ app.whenReady().then(async () => {
     hideActionMenu();
     showTerminalFontMenu(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:180,clientY:100}),key,first.id);
     const fontLabels=[...document.querySelectorAll('#actionMenu button span')].map(item=>item.textContent.trim());
-    const fontMenuOpened=['系统等宽','Cascadia','JetBrains Mono','Consolas','自定义字体…'].every(label=>fontLabels.includes(label));
+    const fontMenuOpened=['系统等宽','Cascadia','JetBrains Mono','Consolas','自定义字体…','紧凑行距 1.0','行距 1.4','常规字重','半粗字重','恢复终端显示默认值'].every(label=>fontLabels.includes(label));
     hideActionMenu();
     mount.addEventListener('contextmenu',event=>showTerminalContextMenu(event,key,first.id),{capture:true});
     mount.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:120,clientY:120}));
@@ -560,6 +644,26 @@ app.whenReady().then(async () => {
     hideActionMenu();
     terminalSessions.delete(key);
     return {found:true,labels,metrics,desktopBackHidden,binaryType,binaryWrite,encodingMenuOpened,fontMenuOpened};
+  })()`);
+  console.log("[ui-smoke] log settings");
+  const logSettingsUi = await window.webContents.executeJavaScript(`(async () => {
+    await showLogSettings();
+    const modal=document.querySelector('#modal');
+    const card=modal?.querySelector('.modal-card');
+    const buttons=card?[...card.querySelectorAll('button')]:[];
+    const result={
+      open:Boolean(modal&&!modal.hidden&&card),
+      accessible:card?.getAttribute('role')==='dialog'&&card?.getAttribute('aria-modal')==='true',
+      days:document.querySelector('#logSettingDays')?.value,
+      fileMb:document.querySelector('#logSettingFileMb')?.value,
+      totalMb:document.querySelector('#logSettingTotalMb')?.value,
+      rotations:document.querySelector('#logSettingRotations')?.value,
+      cleanup:Boolean(buttons.find(button=>button.textContent.includes('立即清理'))),
+      save:Boolean(buttons.find(button=>button.textContent.includes('保存')))
+    };
+    closeModal();
+    result.closed=Boolean(modal?.hidden);
+    return result;
   })()`);
   console.log("[ui-smoke] SFTP views");
   const sftpUi = await window.webContents.executeJavaScript(`(async () => {
@@ -1024,7 +1128,7 @@ app.whenReady().then(async () => {
     const image = await window.webContents.capturePage();
     require("node:fs").writeFileSync(path.join(process.cwd(), "data", "ui-smoke-mobile.png"), image.toPNG());
   }
-  console.log(JSON.stringify({ ...result, pages, navigationUi, aboutUi, desktopMenu, runningActions, authUi, saveAndClearUi, notificationUi, restoreKeyUi, restoreCredentialUi, terminalUi, sftpUi, clipboardUi, dark, mobile, errors }, null, 2));
+  console.log(JSON.stringify({ ...result, pages, navigationUi, aboutUi, desktopMenu, runningActions, authUi, saveAndClearUi, notificationUi, restoreKeyUi, restoreCredentialUi, terminalUi, logSettingsUi, sftpUi, clipboardUi, dark, mobile, errors }, null, 2));
   const overflow = pages.some(page => page.scrollWidth > page.width) || mobile.scrollWidth > mobile.width || mobile.bodyWidth > mobile.width;
   const darkFailed = dark.theme !== "dark" || dark.buttonBackground === "rgb(255, 255, 255)";
   const menuFailed = !desktopMenu.opened || !desktopMenu.closedOnScroll || !mobile.menuOpened || !mobile.menuClosed;
@@ -1038,15 +1142,18 @@ app.whenReady().then(async () => {
   const importSectionsFailed = navigationUi.importChecks.some(item=>item.visible.length!==1||item.visible[0]!==item.requested||item.active.length!==1||item.active[0]!==item.requested);
   const importSourceCheck = navigationUi.importChecks.find(item => item.requested === 'import-source');
   const runtimeUi = navigationUi.runtimeUi || {};
+  const sessionUi = navigationUi.sessionUi || {};
   const runtimeUiFailed = !runtimeUi.found || runtimeUi.port !== '18100' || JSON.stringify(runtimeUi.selectedHosts) !== JSON.stringify(['0.0.0.0']) || !runtimeUi.recycleSettingChecked || !runtimeUi.wildcardCollapsed || runtimeUi.urlLinks.length !== 2 || !runtimeUi.urlLinks.some(url=>url.includes('192.0.2.10:18100')) || !runtimeUi.restartNotice;
+  const sessionUiFailed = sessionUi.ttl !== '720' || sessionUi.max !== '1000' || sessionUi.cleanup !== '10' || !sessionUi.active || !sessionUi.save;
   const activityUiFailed = result.activity.count !== 7 || !result.activity.iconCentered || !result.activity.centersAligned || !result.activity.insideColumn;
-  const navigationUiFailed = !navigationUi.settingsOnlySections || !navigationUi.settingsSectionMode || !navigationUi.settingsVertical || settingsSectionsFailed || runtimeUiFailed || navigationUi.duplicateSettingsNav !== 0 || navigationUi.inlineUpdateDotPresent || !navigationUi.importOwnSections || !navigationUi.importSectionMode || !navigationUi.importVertical || !navigationUi.importResultsMerged || !importSourceCheck?.resultsVisible || importSectionsFailed || !navigationUi.treeHidden || navigationUi.dotsBeforeRead.some(dot=>!dot.found||dot.hidden!==false) || navigationUi.dotsAfterRead.some(dot=>!dot.found||dot.hidden!==true) || navigationUi.storedReadVersion !== '1.0.9' || !navigationUi.sameVersionStaysRead || !navigationUi.newerVersionShowsAgain;
+  const navigationUiFailed = !navigationUi.settingsOnlySections || !navigationUi.settingsSectionMode || !navigationUi.settingsVertical || settingsSectionsFailed || runtimeUiFailed || sessionUiFailed || navigationUi.duplicateSettingsNav !== 0 || navigationUi.inlineUpdateDotPresent || !navigationUi.importOwnSections || !navigationUi.importSectionMode || !navigationUi.importVertical || !navigationUi.importResultsMerged || !importSourceCheck?.resultsVisible || importSectionsFailed || !navigationUi.treeHidden || navigationUi.dotsBeforeRead.some(dot=>!dot.found||dot.hidden!==false) || navigationUi.dotsAfterRead.some(dot=>!dot.found||dot.hidden!==true) || navigationUi.storedReadVersion !== '1.0.9' || !navigationUi.sameVersionStaysRead || !navigationUi.ignoredVersionHidesNotice || !navigationUi.newerAfterIgnoredShowsNotice || !navigationUi.newerVersionShowsAgain;
   const aboutUiFailed = Boolean(aboutUi.error) || !aboutUi.found || !aboutUi.aboutSelected || aboutUi.duplicateSettingsNav !== 0 || !aboutUi.versionMatches || !aboutUi.licenseMetadata || !aboutUi.sourceLink || !aboutUi.modalOpen || !aboutUi.accessible || !aboutUi.fullText || !aboutUi.textScrollable || !aboutUi.cardWithinViewport || !aboutUi.closeFocused || !aboutUi.closedByEscape || !aboutUi.focusReturned || !aboutUi.followupBackdropClean || !aboutUi.followupResolved || !aboutUi.updateUi;
   const expectedSettingsActions = ['通用设置','安全设置','通知设置','启动与运行','关于'];
   const mobileNavigationFailed = !mobile.importExplorerFirst || !mobile.importWorkspaceEntered || !mobile.sftp?.found || !mobile.sftp?.fits || !mobile.sftp?.encodingVisible || !mobile.sftp?.terminalJumpVisible || !mobile.settingsNavigation?.explorerFirst || !mobile.settingsNavigation?.workspaceEntered || !mobile.settingsNavigation?.vertical || !mobile.settingsNavigation?.selectedOnly || !mobile.settingsNavigation?.noDuplicateMenu || JSON.stringify(mobile.settingsNavigation?.labels)!==JSON.stringify(expectedSettingsActions) || mobile.mobileTabs?.count !== 7 || !mobile.mobileTabs?.labelsHidden || !mobile.mobileTabs?.iconsCentered || !mobile.mobileTabs?.fits || !mobile.groupActionVisible || !mobile.groupActionMenuOpened || !mobile.groupControlsInline || !mobile.groupDragFirst || !mobile.groupCancelDoesNotSave || !mobile.groupDragSurvivesRefresh;
   const mobileAboutFailed = !mobile.about || !mobile.about.modalOpen || !mobile.about.cardWithinViewport || !mobile.about.textWithinCard || !mobile.about.textScrollable || !mobile.about.closeVisible || !mobile.about.closed;
   const terminalLabels = ['复制选中','复制全部输出','粘贴','全选终端','清屏','滚动到底部','减小字体','增大字体','重新连接'];
   const terminalUiFailed = !terminalUi.found || !terminalUi.desktopBackHidden || terminalUi.binaryType !== 'arraybuffer' || !terminalUi.binaryWrite || !terminalUi.encodingMenuOpened || !terminalUi.fontMenuOpened || !mobile.terminalBack?.visible || !mobile.terminalBack?.returned || !terminalLabels.every(label=>terminalUi.labels.includes(label)) || terminalUi.metrics.some(item=>Math.abs(item.iconWidth-16)>0.5||Math.abs(item.iconHeight-16)>0.5||item.centerDelta>0.5);
+  const logSettingsUiFailed = !logSettingsUi.open || !logSettingsUi.accessible || !logSettingsUi.days || !logSettingsUi.fileMb || !logSettingsUi.totalMb || !logSettingsUi.rotations || !logSettingsUi.cleanup || !logSettingsUi.save || !logSettingsUi.closed;
   const expectedDirectoryActions = ['收藏','新建目录','新建文件','上传','回收站'];
   const directoryActionsUi = sftpUi.directoryActionsUi || {};
   const jobUi = sftpUi.jobUi || {};
@@ -1054,7 +1161,7 @@ app.whenReady().then(async () => {
   const jobUiFailed = !jobUi.found || !jobUi.mainHasRunning || !jobUi.mainHasFailed || !jobUi.mainHidesDone || !jobUi.historyEnabled || jobUi.historyCount !== '2' || !jobUi.historyHasDone || !jobUi.historyHidesCurrent || !jobUi.noManualRefresh || !jobUi.compactRow;
   const textEncodingUiFailed = !textEncodingUi.opened || textEncodingUi.selected !== 'gbk' || !textEncodingUi.persistDefault || !textEncodingUi.backup || !['utf8','utf8bom','gb18030','gbk','big5','shift_jis','euc-kr','latin1'].every(value=>textEncodingUi.options?.includes(value));
   const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || textEncodingUiFailed || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !directoryActionsUi.crossHostCopyEnabled || !directoryActionsUi.crossHostMoveDisabled || !directoryActionsUi.filenameEncodingMenu || !directoryActionsUi.terminalJump || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
-  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton ? 1 : 0;
+  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || logSettingsUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton ? 1 : 0;
   window.destroy();
   process.exit(code);
 }).catch(error => {

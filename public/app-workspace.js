@@ -211,7 +211,8 @@ function renderExplorerTools() {
     tools.classList.add("log-mode");
     tools.innerHTML = `
       <div class="search-field">${icon("search")}<input id="logSearch" placeholder="搜索日志" value="${esc(logSearch)}" oninput="setLogSearch(this.value)"></div>
-      <div class="tool-row"><button onclick="openTodaySystemLog()">${icon("calendar-days")}<span>今天日志</span></button><button onclick="showLogCleanupMenu(event)">${icon("list-filter")}<span>清理日志</span></button></div>`;
+      <div class="tool-row"><button onclick="openTodaySystemLog()">${icon("calendar-days")}<span>今天日志</span></button><button onclick="showLogSettings()">${icon("settings-2")}<span>日志设置</span></button></div>
+      <button onclick="showLogCleanupMenu(event)">${icon("list-filter")}<span>清理日志</span></button>`;
     return;
   }
   if (primaryView === "running") {

@@ -1,12 +1,18 @@
 const { spawn } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
-const iconv = require("iconv-lite");
 const path = require("node:path");
-const { TextDecoder } = require("node:util");
 const { SSH_BIN } = require("./config");
 const { getConnection } = require("./db");
 const { effectiveExtraArgs, securePrivateKeyPermissions } = require("./ssh");
 const { isPasswordConnection, spawnPasswordCommand } = require("./ssh2-client");
+const {
+  decodeRemoteFilenameOutput,
+  decodeRemoteText,
+  encodeRemoteText,
+  normalizeTextEncoding,
+  remotePathOperand,
+  shellQuote
+} = require("./sftp-encoding");
 const MAX_TEXT_FILE_SIZE = 512 * 1024;
 const DEFAULT_DIRECTORY_PAGE_SIZE = 50;
 const MAX_DIRECTORY_PAGE_SIZE = 200;
@@ -16,31 +22,6 @@ const SFTP_RECYCLE_DIRECTORY = ".tunneldesk-recycle-bin";
 const directorySnapshots = new Map();
 const directoryAliases = new Map();
 const directoryNameCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
-
-function shellQuote(value) {
-  return `'${String(value || "").replace(/'/g, `'\\''`)}'`;
-}
-
-const FILENAME_ENCODINGS = new Set(["utf8", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
-
-function filenameEncoding(connection) {
-  const encoding = String(connection?.sftp_filename_encoding || "utf8").toLowerCase();
-  return FILENAME_ENCODINGS.has(encoding) ? encoding : "utf8";
-}
-
-function remotePathOperand(connection, value) {
-  const text = String(value || "");
-  const encoding = filenameEncoding(connection);
-  if (encoding === "utf8") return shellQuote(text);
-  const bytes = iconv.encode(text, encoding);
-  if (iconv.decode(bytes, encoding) !== text) throw new Error(`文件名包含 ${encoding} 无法表示的字符`);
-  const octal = [...bytes].map((byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
-  return `"$(printf '%b' ${shellQuote(octal)})"`;
-}
-
-function decodeRemoteFilenameOutput(connection, body) {
-  return iconv.decode(body, filenameEncoding(connection));
-}
 
 function permissionPathOperand(value) {
   const normalized = String(value || "").replace(/\\/g, "/");
@@ -521,43 +502,6 @@ async function extractRemoteArchive(connectionId, remotePath, targetDir) {
   else throw new Error("暂只支持 zip、tar.gz、tgz、tar 解压");
   await runRemote(connection, command, null, 120000);
   return { ok: true };
-}
-
-const TEXT_ENCODINGS = new Set(["auto", "utf8", "utf8bom", "gb18030", "gbk", "big5", "shift_jis", "euc-kr", "latin1"]);
-
-function normalizeTextEncoding(value, fallback = "auto") {
-  const encoding = String(value || fallback || "auto").toLowerCase();
-  if (!TEXT_ENCODINGS.has(encoding)) throw new Error("不支持的文本编码");
-  return encoding;
-}
-
-function decodeRemoteText(body, requestedEncoding = "auto") {
-  let encoding = normalizeTextEncoding(requestedEncoding);
-  const hasUtf8Bom = body.length >= 3 && body[0] === 0xef && body[1] === 0xbb && body[2] === 0xbf;
-  if (encoding === "auto") {
-    if (hasUtf8Bom) encoding = "utf8bom";
-    else {
-      try {
-        new TextDecoder("utf-8", { fatal: true }).decode(body);
-        encoding = "utf8";
-      } catch {
-        encoding = "gb18030";
-      }
-    }
-  }
-  const source = encoding === "utf8bom" && hasUtf8Bom ? body.subarray(3) : body;
-  const content = iconv.decode(source, encoding === "utf8bom" ? "utf8" : encoding);
-  return { content, encoding, bom: encoding === "utf8bom" && hasUtf8Bom };
-}
-
-function encodeRemoteText(content, encoding) {
-  const selected = normalizeTextEncoding(encoding, "utf8");
-  if (selected === "auto") throw new Error("保存文件前请选择明确的文本编码");
-  const text = String(content || "");
-  const codec = selected === "utf8bom" ? "utf8" : selected;
-  const body = iconv.encode(text, codec);
-  if (iconv.decode(body, codec) !== text) throw new Error(`当前内容包含 ${selected} 无法表示的字符，请改用 UTF-8 或其他编码`);
-  return selected === "utf8bom" ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), body]) : body;
 }
 
 async function readRemoteTextFile(connectionId, remotePath, requestedEncoding = "") {

@@ -2,10 +2,20 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { LOG_DIR } = require("./config");
 const { listConnections } = require("./db");
+const {
+  enforceLogRetention,
+  readLogSettings,
+  resolveLogFile,
+  readLogWindow: readLogWindowFromFile,
+  rotateLogFile,
+  writeLogSettings
+} = require("./log-reader");
 
 const TERMINAL_DIR = path.join(LOG_DIR, "terminals");
 const BATCH_DIR = path.join(LOG_DIR, "batch");
+const LOG_SETTINGS_FILE = path.join(LOG_DIR, "log-settings.json");
 const logWriteQueues = new Map();
+let currentLogSettings = readLogSettings(LOG_SETTINGS_FILE);
 
 function queueLogWrite(file, data) {
   const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8");
@@ -33,6 +43,7 @@ function flushLogFile(file) {
   const body = Buffer.concat(state.chunks, state.bytes);
   state.chunks = [];
   state.bytes = 0;
+  try { rotateLogFile(file, body.length, currentLogSettings); } catch {}
   state.writing = fs.promises.appendFile(file, body).catch(() => {}).finally(() => {
     state.writing = null;
     if (state.chunks.length) flushLogFile(file);
@@ -138,21 +149,23 @@ function relativeLogPath(fullPath) {
 }
 
 function parseTerminalFilename(name) {
-  const stem = name.replace(/\.log$/i, "");
+  const rotation = Number(name.match(/\.log\.(\d+)$/i)?.[1] || 0);
+  const stem = name.replace(/\.log(?:\.\d+)?$/i, "");
   const match = stem.match(/^(.*)-(\d{4})-(\d{2})-(\d{2})-(\d{6})$/);
   if (!match) return { label: stem, time: 0 };
   const title = match[1].replace(/_/g, " ");
   const time = new Date(`${match[2]}-${match[3]}-${match[4]}T${match[5].slice(0, 2)}:${match[5].slice(2, 4)}:${match[5].slice(4, 6)}`).getTime();
-  return { label: `${title}-${Number(match[2])}年${Number(match[3])}月${Number(match[4])}日 ${match[5].slice(0, 2)}:${match[5].slice(2, 4)}:${match[5].slice(4, 6)}`, time };
+  return { label: `${title}-${Number(match[2])}年${Number(match[3])}月${Number(match[4])}日 ${match[5].slice(0, 2)}:${match[5].slice(2, 4)}:${match[5].slice(4, 6)}${rotation ? `（轮转 ${rotation}）` : ""}`, time };
 }
 
 function parseBatchFilename(name) {
-  const stem = name.replace(/\.log$/i, "");
+  const rotation = Number(name.match(/\.log\.(\d+)$/i)?.[1] || 0);
+  const stem = name.replace(/\.log(?:\.\d+)?$/i, "");
   const match = stem.match(/^batch-(\d{4})-(\d{2})-(\d{2})-(\d{6})$/);
   if (!match) return { label: stem, time: 0 };
   const time = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4].slice(0, 2)}:${match[4].slice(2, 4)}:${match[4].slice(4, 6)}`).getTime();
   return {
-    label: `批量执行-${Number(match[2])}月${Number(match[3])}日 ${match[4].slice(0, 2)}:${match[4].slice(2, 4)}:${match[4].slice(4, 6)}`,
+    label: `批量执行-${Number(match[2])}月${Number(match[3])}日 ${match[4].slice(0, 2)}:${match[4].slice(2, 4)}:${match[4].slice(4, 6)}${rotation ? `（轮转 ${rotation}）` : ""}`,
     time
   };
 }
@@ -160,19 +173,19 @@ function parseBatchFilename(name) {
 function listLogs() {
   ensureLogDirs();
   const system = fs.readdirSync(LOG_DIR)
-    .filter((name) => /^system-\d{4}-\d{2}-\d{2}\.log$/.test(name))
+    .filter((name) => /^system-\d{4}-\d{2}-\d{2}\.log(?:\.\d+)?$/.test(name))
     .map((name) => {
-      const match = name.match(/^system-(\d{4})-(\d{2})-(\d{2})\.log$/);
+      const match = name.match(/^system-(\d{4})-(\d{2})-(\d{2})\.log(?:\.(\d+))?$/);
       return {
-        label: `system-${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日`,
+        label: `system-${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日${match[4] ? `（轮转 ${match[4]}）` : ""}`,
         path: name,
         time: new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00`).getTime()
       };
     })
     .sort((a, b) => b.time - a.time);
 
-  const terminalFiles = fs.existsSync(TERMINAL_DIR) ? fs.readdirSync(TERMINAL_DIR).filter((name) => name.endsWith(".log")) : [];
-  const batch = (fs.existsSync(BATCH_DIR) ? fs.readdirSync(BATCH_DIR).filter((name) => name.endsWith(".log")) : [])
+  const terminalFiles = fs.existsSync(TERMINAL_DIR) ? fs.readdirSync(TERMINAL_DIR).filter((name) => /\.log(?:\.\d+)?$/i.test(name)) : [];
+  const batch = (fs.existsSync(BATCH_DIR) ? fs.readdirSync(BATCH_DIR).filter((name) => /\.log(?:\.\d+)?$/i.test(name)) : [])
     .map((name) => {
       const parsed = parseBatchFilename(name);
       return { label: parsed.label, path: relativeLogPath(path.join(BATCH_DIR, name)), time: parsed.time };
@@ -196,18 +209,17 @@ function readLog(relPath) {
   return stripAnsi(readRawLog(relPath));
 }
 
+function readLogWindow(relPath, options = {}) {
+  return readLogWindowFromFile(LOG_DIR, relPath, options);
+}
+
 function readRawLog(relPath) {
-  const resolved = path.resolve(LOG_DIR, String(relPath || ""));
-  if (!resolved.startsWith(path.resolve(LOG_DIR))) throw new Error("日志路径无效");
-  if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) throw new Error("日志不存在");
+  const resolved = resolveLogFile(LOG_DIR, String(relPath || ""));
   return fs.readFileSync(resolved, "utf8");
 }
 
 function resolveLogPath(relPath) {
-  const resolved = path.resolve(LOG_DIR, String(relPath || ""));
-  if (!resolved.startsWith(path.resolve(LOG_DIR))) throw new Error("日志路径无效");
-  if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) throw new Error("日志不存在");
-  return resolved;
+  return resolveLogFile(LOG_DIR, String(relPath || ""));
 }
 
 function deleteLogs(paths) {
@@ -229,6 +241,29 @@ function deleteLogs(paths) {
   return { deleted, errors };
 }
 
+function getLogSettings() {
+  return { ...currentLogSettings };
+}
+
+function updateLogSettings(value) {
+  currentLogSettings = writeLogSettings(LOG_SETTINGS_FILE, value || {});
+  const cleanup = enforceConfiguredLogRetention();
+  return { ...currentLogSettings, cleanup };
+}
+
+function enforceConfiguredLogRetention() {
+  ensureLogDirs();
+  return enforceLogRetention(LOG_DIR, currentLogSettings, new Set([...logWriteQueues.keys()].map(file => path.resolve(file))));
+}
+
+const logRetentionTimer = setInterval(() => {
+  try { enforceConfiguredLogRetention(); } catch {}
+}, 6 * 60 * 60 * 1000);
+logRetentionTimer.unref?.();
+setTimeout(() => {
+  try { enforceConfiguredLogRetention(); } catch {}
+}, 1000).unref?.();
+
 function stripAnsi(text) {
   return String(text || "")
     .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[PX^_][\s\S]*?\x1B\\)/g, "")
@@ -243,6 +278,10 @@ module.exports = {
   createBatchCommandLog,
   appendBatchCommandLog,
   listLogs,
+  getLogSettings,
+  updateLogSettings,
+  enforceConfiguredLogRetention,
+  readLogWindow,
   readLog,
   readRawLog,
   deleteLogs

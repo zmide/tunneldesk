@@ -79,11 +79,28 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
 }
 
-function releaseResult(packageInfo, release, checkedAt, fromCache) {
+function formalReleases(value) {
+  const releases = Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  return releases
+    .map(release => ({ release, version: parseVersion(release?.tag_name) }))
+    .filter(item => item.version && item.release?.html_url && !item.release?.draft && !item.release?.prerelease)
+    .sort((left, right) => compareVersions(right.version.normalized, left.version.normalized))
+    .filter(item => {
+      if (seen.has(item.version.normalized)) return false;
+      seen.add(item.version.normalized);
+      return true;
+    });
+}
+
+function releaseResult(packageInfo, releaseInput, checkedAt, fromCache) {
   const current = parseVersion(packageInfo.version);
-  const latest = parseVersion(release?.tag_name);
+  const releases = formalReleases(releaseInput);
+  const latestItem = releases[0];
+  const release = latestItem?.release;
+  const latest = latestItem?.version;
   if (!current) throw new Error(`当前版本号无效：${packageInfo.version || "空"}`);
-  if (!latest || !release?.html_url || release.draft || release.prerelease) {
+  if (!latest || !release) {
     throw new Error("GitHub Releases 返回的正式版本数据无效");
   }
   return {
@@ -94,11 +111,19 @@ function releaseResult(packageInfo, release, checkedAt, fromCache) {
     name: String(release.name || release.tag_name || latest.normalized),
     published_at: release.published_at || "",
     notes: String(release.body || ""),
+    release_notes: releases.slice(0, 2).map(item => ({
+      version: item.version.normalized,
+      name: String(item.release.name || item.release.tag_name || item.version.normalized),
+      release_url: String(item.release.html_url),
+      published_at: item.release.published_at || "",
+      notes: String(item.release.body || "")
+    })),
     assets: Array.isArray(release.assets) ? release.assets.map(asset => ({
       name: String(asset?.name || ""),
       url: String(asset?.browser_download_url || ""),
       size: Number(asset?.size || 0),
-      content_type: String(asset?.content_type || "")
+      content_type: String(asset?.content_type || ""),
+      digest: String(asset?.digest || "")
     })).filter(asset => asset.name && asset.url) : [],
     checked_at: new Date(checkedAt).toISOString(),
     from_cache: Boolean(fromCache),
@@ -107,16 +132,20 @@ function releaseResult(packageInfo, release, checkedAt, fromCache) {
 }
 
 function cachedResult(cache, packageInfo) {
-  if (!cache?.result) return null;
+  if (Number(cache?.schema_version || 0) < 2 || !cache?.result || !Array.isArray(cache.result.release_notes)) return null;
   const current = parseVersion(packageInfo?.version);
   const latest = parseVersion(cache.result.latest_version);
+  const ignored = parseVersion(cache.ignored_latest_version);
   if (!current) throw new Error(`当前版本号无效：${packageInfo?.version || "空"}`);
   if (!latest) return null;
+  const updateAvailable = compareVersions(latest.normalized, current.normalized) > 0;
   return {
     ...cache.result,
     current_version: current.normalized,
     latest_version: latest.normalized,
-    update_available: compareVersions(latest.normalized, current.normalized) > 0,
+    update_available: updateAvailable,
+    ignored_version: ignored?.normalized || "",
+    update_ignored: Boolean(updateAvailable && ignored?.normalized === latest.normalized),
     from_cache: true,
     source: "github"
   };
@@ -143,12 +172,14 @@ function createUpdateChecker(options: any = {}) {
   }
 
   function saveCache(cache) {
-    writeJson(cachePath, { schema_version: 1, ...cache });
+    writeJson(cachePath, { ...cache, schema_version: 2 });
   }
 
   async function notifyOnce(result) {
     if (!result.update_available || !onUpdate) return;
     const cache = readCache();
+    const ignored = parseVersion(cache.ignored_latest_version);
+    if (ignored?.normalized === result.latest_version) return;
     if (cache.notified_latest_version === result.latest_version) return;
     saveCache({ ...cache, notified_latest_version: result.latest_version });
     await onUpdate(result);
@@ -173,7 +204,7 @@ function createUpdateChecker(options: any = {}) {
     if (cache.etag) headers["If-None-Match"] = cache.etag;
     try {
       const request = Promise.resolve(fetchImpl(
-        `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/releases/latest`,
+        `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/releases?per_page=10`,
         { method: "GET", headers, signal: controller.signal }
       ));
       return await Promise.race([request, timeout]);
@@ -197,6 +228,7 @@ function createUpdateChecker(options: any = {}) {
       return result;
     }
 
+    if (!cached) cache = { ...cache, etag: "" };
     const response: any = await requestLatest(cache);
     if (response?.status === 304) {
       const result = cachedResult(cache, packageInfo);
@@ -211,18 +243,20 @@ function createUpdateChecker(options: any = {}) {
       if (response?.status === 404) throw new Error("GitHub 仓库尚未发布正式版本");
       throw new Error(`GitHub 更新检查失败（HTTP ${response?.status || "未知"}）`);
     }
-    let release;
+    let releases;
     try {
-      release = await response.json();
+      releases = await response.json();
     } catch {
       throw new Error("GitHub Releases 返回的数据无法解析");
     }
-    const result = releaseResult(packageInfo, release, checkedAt, false);
+    const result = releaseResult(packageInfo, releases, checkedAt, false);
     const etag = response.headers?.get?.("etag") || response.headers?.get?.("ETag") || "";
     cache = { ...cache, checked_at_ms: checkedAt, etag, result };
     saveCache(cache);
-    await notifyOnce(result);
-    return result;
+    const stored = cachedResult(readCache(), packageInfo);
+    const checkedResult = stored ? { ...stored, checked_at: result.checked_at, from_cache: false } : result;
+    await notifyOnce(checkedResult);
+    return checkedResult;
   }
 
   function check(optionsOrForce: any = {}) {
@@ -236,7 +270,20 @@ function createUpdateChecker(options: any = {}) {
     return cachedResult(readCache(), packageInfo);
   }
 
-  return { check, status, cachePath, packageInfo, repository };
+  function setIgnoredCurrentVersion(enabled) {
+    const cache = readCache();
+    const current = cachedResult(cache, packageInfo);
+    if (enabled && (!current?.update_available || !current.latest_version)) {
+      throw new Error("当前没有可忽略的新版本");
+    }
+    saveCache({
+      ...cache,
+      ignored_latest_version: enabled ? current.latest_version : ""
+    });
+    return cachedResult(readCache(), packageInfo);
+  }
+
+  return { check, status, setIgnoredCurrentVersion, cachePath, packageInfo, repository };
 }
 
 module.exports = {

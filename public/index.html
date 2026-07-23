@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TunnelDesk</title>
-  <link rel="stylesheet" href="/vendor/xterm/xterm.css?v=1.1.2">
-  <link rel="stylesheet" href="/app.css?v=1.1.2">
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css?v=1.1.3">
+  <link rel="stylesheet" href="/app.css?v=1.1.3">
 </head>
 <body>
   <div id="toast" class="toast"></div>
@@ -196,26 +196,26 @@
         <h3><i data-lucide="database-backup"></i>数据库导入导出</h3>
         <div class="actions"><button onclick="downloadDatabaseBackup()">下载数据库备份</button><button id="backupBundleBtn" onclick="downloadBackupBundle()" hidden>下载加密迁移包</button></div>
         <label>恢复数据库 / 加密迁移包</label>
-        <div class="upload-line"><label class="file-picker"><input id="db_restore_upload" type="file" accept=".db,.json,.tdbackup.json,application/json,application/octet-stream,*/*" onchange="updateFilePicker(this)"><span class="file-picker-button">选择文件</span><span class="file-picker-name">未选择文件</span></label><button class="danger" onclick="restoreDatabaseBackup()">上传恢复</button></div>
-        <div id="backupBundleNote" class="muted">普通备份使用 .db 文件；启用配置加密后会显示 .tdbackup.json 加密迁移包下载入口。</div>
+        <div class="upload-line"><label class="file-picker"><input id="db_restore_upload" type="file" accept=".db,.json,.tdbackup,.tdbackup.json,application/json,application/octet-stream,*/*" onchange="updateFilePicker(this)"><span class="file-picker-button">选择文件</span><span class="file-picker-name">未选择文件</span></label><button class="danger" onclick="restoreDatabaseBackup()">上传恢复</button></div>
+        <div id="backupBundleNote" class="muted">普通备份使用 .db 文件；启用配置加密后会显示 .tdbackup 加密迁移包下载入口。</div>
       </section>
     </div>
   </div>
 </template>
 
-<script src="/vendor/lucide/lucide.min.js?v=1.1.2"></script>
-<script src="/app-api.js?v=1.1.2"></script>
-<script src="/app-utils.js?v=1.1.2"></script>
-<script src="/app-workspace.js?v=1.1.2"></script>
-<script src="/app-settings.js?v=1.1.2"></script>
-<script src="/app-running.js?v=1.1.2"></script>
-<script src="/app-batch.js?v=1.1.2"></script>
-<script src="/app-logs.js?v=1.1.2"></script>
-<script src="/app-connections.js?v=1.1.2"></script>
-<script src="/app-terminal.js?v=1.1.2"></script>
-<script src="/app-forwards.js?v=1.1.2"></script>
-<script src="/app-import.js?v=1.1.2"></script>
-<script src="/app-sftp.js?v=1.1.2"></script>
-<script src="/app.js?v=1.1.2"></script>
+<script src="/vendor/lucide/lucide.min.js?v=1.1.3"></script>
+<script src="/app-api.js?v=1.1.3"></script>
+<script src="/app-utils.js?v=1.1.3"></script>
+<script src="/app-workspace.js?v=1.1.3"></script>
+<script src="/app-settings.js?v=1.1.3"></script>
+<script src="/app-running.js?v=1.1.3"></script>
+<script src="/app-batch.js?v=1.1.3"></script>
+<script src="/app-logs.js?v=1.1.3"></script>
+<script src="/app-connections.js?v=1.1.3"></script>
+<script src="/app-terminal.js?v=1.1.3"></script>
+<script src="/app-forwards.js?v=1.1.3"></script>
+<script src="/app-import.js?v=1.1.3"></script>
+<script src="/app-sftp.js?v=1.1.3"></script>
+<script src="/app.js?v=1.1.3"></script>
 </body>
 </html>

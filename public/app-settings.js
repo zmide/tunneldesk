@@ -5,6 +5,7 @@ let desktopSettings = null;
 let runtimeSettingsMessage = null;
 let runtimeSettingsCheck = null;
 let licenseModalKeyHandler = null;
+let updateDownloadPollingTimer = null;
 const SETTINGS_SECTION_META = {
   "settings-general": "通用设置",
   "settings-basic": "安全设置",
@@ -28,7 +29,7 @@ function currentUpdateNoticeVersion() {
 
 function shouldShowUpdateNotice() {
   const latestVersion = currentUpdateNoticeVersion();
-  return Boolean(updateSettings?.update_available && latestVersion && latestVersion !== updateNoticeReadVersion);
+  return Boolean(updateSettings?.update_available && !updateSettings?.update_ignored && latestVersion && latestVersion !== updateNoticeReadVersion);
 }
 
 function syncUpdateNoticeDots() {
@@ -57,10 +58,15 @@ function syncUpdateNoticeForCurrentSection() {
 
 async function loadCachedUpdateStatus() {
   try {
-    const status = await api("/api/updates/status");
+    const [status, download] = await Promise.all([
+      api("/api/updates/status"),
+      api("/api/updates/download/status").catch(()=>null)
+    ]);
     if (status && typeof status === "object") updateSettings = status;
+    if (updateSettings && download) updateSettings.download_status = download;
     const area = $("updateCheckArea");
     if (area) area.innerHTML = updateStatusHtml();
+    if (download?.state === "downloading") startUpdateDownloadPolling();
     syncUpdateNoticeForCurrentSection();
   } catch {}
 }
@@ -597,8 +603,31 @@ function renderSettings() {
           <option value="off" ${s.auth_mode === "off" ? "selected" : ""}>关闭 Web 密码</option>
         </select>
         <label class="check-row"><input id="securityLanAuth" type="checkbox" ${s.lan_auth_enabled !== false ? "checked" : ""}> 通过局域网或其他非本机地址访问时要求密码</label>
+        <label>会话 Cookie 安全模式</label>
+        <select id="securitySecureCookieMode">
+          <option value="auto" ${(s.secure_cookie_mode || "auto") === "auto" ? "selected" : ""}>自动识别 HTTPS（推荐）</option>
+          <option value="always" ${s.secure_cookie_mode === "always" ? "selected" : ""}>始终使用 Secure</option>
+          <option value="never" ${s.secure_cookie_mode === "never" ? "selected" : ""}>从不使用 Secure</option>
+        </select>
+        <label class="check-row"><input id="securityTrustedProxyEnabled" type="checkbox" ${s.trusted_proxy_enabled ? "checked" : ""}> 信任指定的 HTTPS 反向代理</label>
+        <label>可信代理 IP</label>
+        <input id="securityTrustedProxyAddresses" value="${escAttr((s.trusted_proxy_addresses || []).join(", "))}" placeholder="例如 127.0.0.1, 192.168.1.2">
+        <div class="muted">仅来自这些 IP 的请求可以使用 X-Forwarded-For 和 X-Forwarded-Proto。自动模式只在直连 HTTPS 或可信代理明确报告 HTTPS 时发送 Secure Cookie。</div>
+        <div class="muted">登录密码在 5 分钟内连续错误 ${Number(s.login_protection?.max_failures || 5)} 次会锁定来源地址 ${Number(s.login_protection?.lock_seconds || 300)} 秒；过期会话会自动清理。</div>
         <div class="warning">关闭局域网密码后，局域网内设备可能直接操作 SSH、SFTP、密钥、转发和批量命令。</div>
         <div class="actions"><button class="primary" onclick="saveSecurityOptions()">保存认证策略</button><button onclick="logout()">退出登录</button></div>
+      </section>
+      <section>
+        <h3>会话管理</h3>
+        <label>登录会话有效期（分钟）</label>
+        <input id="securitySessionTtlMinutes" type="number" min="${Number(s.session_management?.limits?.ttl_minutes?.min || 5)}" max="${Number(s.session_management?.limits?.ttl_minutes?.max || 43200)}" value="${Number(s.session_management?.ttl_minutes || 720)}">
+        <label>最大活动会话数</label>
+        <input id="securitySessionMaxSessions" type="number" min="${Number(s.session_management?.limits?.max_sessions?.min || 1)}" max="${Number(s.session_management?.limits?.max_sessions?.max || 10000)}" value="${Number(s.session_management?.max_sessions || 1000)}">
+        <label>过期会话清理间隔（分钟）</label>
+        <input id="securitySessionCleanupMinutes" type="number" min="${Number(s.session_management?.limits?.cleanup_minutes?.min || 1)}" max="${Number(s.session_management?.limits?.cleanup_minutes?.max || 1440)}" value="${Number(s.session_management?.cleanup_minutes || 10)}">
+        <div class="cmd">当前活动会话：${Number(s.active_sessions || 0)}</div>
+        <div class="muted">保存后对新会话立即生效。缩短有效期或降低数量上限时，已有会话会同步收紧；过期会话即使尚未到定时清理时间也不能继续使用。</div>
+        <div class="actions"><button class="primary" onclick="saveSessionManagement()">${icon("save")}<span>保存会话设置</span></button></div>
       </section>
       <section>
         <h3>密码和 Token</h3>
@@ -690,26 +719,97 @@ function renderSettings() {
 function updateStatusHtml() {
   const update = updateSettings;
   if (!update) {
-    return `<div class="update-status checking"><div><strong>正在检查更新</strong><span>正在读取 GitHub Releases。</span></div><span class="status-pill">检查中</span></div><div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>重新检查</span></button></div>`;
+    return `<div class="update-card"><div class="update-card-head"><strong>GitHub Release 更新</strong><span>正在读取版本信息</span></div><div class="update-status checking"><div><strong>正在检查更新</strong><span>正在读取 GitHub Releases。</span></div><span class="status-pill">检查中</span></div><div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>重新检查</span></button></div></div>`;
   }
   if (update.error) {
-    return `<div class="update-status failed"><div><strong>暂时无法检查更新</strong><span>${esc(update.error)}</span></div><span class="status-pill failed">失败</span></div><div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>重试</span></button></div>`;
+    return `<div class="update-card"><div class="update-card-head"><strong>GitHub Release 更新</strong><span>检查失败</span></div><div class="update-status failed"><div><strong>暂时无法检查更新</strong><span>${esc(update.error)}</span></div><span class="status-pill failed">失败</span></div><div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>重试</span></button></div></div>`;
   }
   const currentVersion = update.current_version ? `v${String(update.current_version).replace(/^v/i, "")}` : "当前版本未知";
   if (!update.latest_version) {
-    return `<div class="update-status"><div><strong>尚未检查更新</strong><span>当前 ${esc(currentVersion)}，启动检查完成后会自动更新此处。</span></div><span class="status-pill">待检查</span></div><div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>立即检查</span></button></div>`;
+    return `<div class="update-card"><div class="update-card-head"><strong>GitHub Release 更新</strong><span>${esc(currentVersion)}</span></div><div class="update-status"><div><strong>尚未检查更新</strong><span>启动检查完成后会自动更新此处。</span></div><span class="status-pill">待检查</span></div><div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>立即检查</span></button></div></div>`;
   }
   const latestVersion = update.latest_version ? `v${String(update.latest_version).replace(/^v/i, "")}` : "尚无正式版本";
   const checkedAt = update.checked_at ? new Date(update.checked_at).toLocaleString("zh-CN", {hour12:false}) : "尚未检查";
   const publishedAt = update.published_at ? new Date(update.published_at).toLocaleDateString("zh-CN") : "";
-  const title = update.update_available ? `发现新版本 ${latestVersion}` : "已是最新版";
-  const detail = update.update_available
-    ? `当前 ${currentVersion}${publishedAt ? ` · 发布于 ${publishedAt}` : ""}`
-    : `${currentVersion} · 最近检查 ${checkedAt}`;
-  const notes = update.update_available && update.notes ? `<div class="update-notes">${esc(String(update.notes).slice(0, 600))}</div>` : "";
+  const download = update.download_status || {};
+  const progress = Math.max(0, Math.min(100, Number(download.progress_percent || 0)));
+  const statusLabel = download.state === "downloading"
+    ? "下载中"
+    : download.state === "downloaded"
+      ? "已下载并校验"
+      : download.state === "failed"
+        ? "下载失败"
+        : update.update_available ? "可更新" : "已是最新版";
+  const resourceName = download.selected_asset_name || download.asset_name || "未找到当前平台资源";
+  const platformLabels = {win32:"Windows", darwin:"macOS", linux:"Linux"};
+  const packageLabels = {portable:"便携版", installer:"安装版", dmg:"DMG", zip:"ZIP", appimage:"AppImage", deb:"DEB", rpm:"RPM"};
+  const target = [platformLabels[download.platform] || download.platform, download.arch, packageLabels[download.package_type] || download.package_type].filter(Boolean).join(" · ");
+  const progressText = download.state === "downloading"
+    ? `${Math.round(progress)}% · ${formatUpdateBytes(download.bytes_downloaded)} / ${formatUpdateBytes(download.size || download.selected_asset_size)}`
+    : download.state === "downloaded"
+      ? `100% · ${formatUpdateBytes(download.size)}`
+      : `${Math.round(progress)}%`;
+  const notes = updateReleaseNotesHtml(update);
   const releaseUrl = safeGitHubReleaseUrl(update.release_url);
-  const releaseLink = releaseUrl ? `<a class="button-link primary" href="${escAttr(releaseUrl)}" target="_blank" rel="noopener">${icon("external-link")}<span>查看 Release</span></a>` : "";
-  return `<div class="update-status ${update.update_available ? "available" : "current"}"><div><strong>${esc(title)}</strong><span>${esc(detail)}</span></div><span class="status-pill ${update.update_available ? "reconnecting" : "running"}">${update.update_available ? "可更新" : "最新"}</span></div>${notes}<div class="actions update-actions">${releaseLink}<button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>检查更新</span></button></div>`;
+  const releaseLink = releaseUrl ? `<a class="button-link" href="${escAttr(releaseUrl)}" target="_blank" rel="noopener">${icon("external-link")}<span>查看 Release</span></a>` : "";
+  const downloadedCurrent = download.state === "downloaded"
+    && String(download.version || "").replace(/^v/i, "") === String(update.latest_version || "").replace(/^v/i, "")
+    && Boolean(download.asset_name)
+    && download.asset_name === download.selected_asset_name;
+  const openDirectoryAction = download.can_open_directory
+    ? `<button onclick="openDownloadedUpdateDirectory()">${icon("folder-open")}<span>打开下载目录</span></button>`
+    : "";
+  const redownloadAction = downloadedCurrent
+    ? `<button id="downloadUpdateBtn" onclick="downloadUpdatePackage(true)">${icon("download")}<span>重新下载</span></button>`
+    : "";
+  const downloadAction = update.update_available
+    ? downloadedCurrent
+      ? download.package_type === "portable"
+        ? `${openDirectoryAction || `<span class="muted">便携版已下载并通过校验；请在运行设备的 updates 目录中找到文件，关闭旧版本后手动替换。</span>`}${redownloadAction}`
+        : `${download.can_open ? `<button class="primary" onclick="openDownloadedUpdate()">${icon("package-open")}<span>打开已校验安装包</span></button>` : ""}${openDirectoryAction || (!download.can_open ? `<span class="muted">安装包已下载并通过校验；请在运行设备的 updates 目录中手动安装。</span>` : "")}${redownloadAction}`
+      : download.state === "downloading"
+        ? `<button id="downloadUpdateBtn" disabled>${icon("download")}<span>正在下载</span></button>`
+        : `<button id="downloadUpdateBtn" class="primary" onclick="downloadUpdatePackage()">${icon("download")}<span>${download.state === "failed" ? "重新下载并校验" : "下载并校验"}</span></button>`
+    : "";
+  const downloadError = download.state === "failed" && download.error ? `<div class="warning">更新下载失败：${esc(download.error)}</div>` : "";
+  const ignoreControl = update.update_available
+    ? `<label class="check-row update-ignore-row"><input id="updateIgnoreCurrentVersion" type="checkbox" ${update.update_ignored ? "checked" : ""} onchange="setUpdateVersionIgnored(this)"> 忽略 ${esc(latestVersion)} 的更新提醒</label><div class="muted update-ignore-help">只隐藏该版本的提示弹窗和红点，关于页面仍可正常下载；出现更高版本时会自动恢复提醒。</div>`
+    : "";
+  return `<div class="update-card">
+    <div class="update-card-head"><strong>GitHub Release 更新</strong><span>当前版本 ${esc(currentVersion)}</span></div>
+    <dl class="update-details">
+      <div><dt>状态</dt><dd><span class="status-pill ${download.state === "failed" ? "failed" : update.update_available ? "reconnecting" : "running"}">${esc(statusLabel)}</span><small>最近检查 ${esc(checkedAt)}</small></dd></div>
+      <div><dt>最新版本</dt><dd><strong>${esc(latestVersion)}</strong>${publishedAt ? `<small>发布于 ${esc(publishedAt)}</small>` : ""}</dd></div>
+      <div><dt>资源</dt><dd><strong title="${escAttr(resourceName)}">${esc(resourceName)}</strong>${target ? `<small>${esc(target)}</small>` : ""}</dd></div>
+      <div><dt>进度</dt><dd><strong>${esc(progressText)}</strong><div class="update-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><i style="width:${progress}%"></i></div></dd></div>
+    </dl>
+    ${notes}${downloadError}
+    <div class="actions update-actions"><button id="checkUpdateBtn" onclick="refreshUpdateStatus(true)">${icon("refresh-cw")}<span>检查更新</span></button>${downloadAction}${releaseLink}</div>
+    ${ignoreControl}
+    <div class="muted">自动匹配运行 TunnelDesk 主机的平台、架构和 Windows 安装类型；只接受 GitHub HTTPS 资源及匹配的 SHA-256，不会静默安装或自动回滚。</div>
+  </div>`;
+}
+
+function updateReleaseNotesHtml(update) {
+  const history = Array.isArray(update?.release_notes) && update.release_notes.length
+    ? update.release_notes.slice(0, 2)
+    : update?.notes
+      ? [{version:update.latest_version, published_at:update.published_at, notes:update.notes}]
+      : [];
+  if (!history.length) return "";
+  return `<div class="update-notes"><strong>最近版本更新内容</strong><div class="update-release-list">${history.map((item, index) => {
+    const version = String(item?.version || "").replace(/^v/i, "");
+    const published = item?.published_at ? new Date(item.published_at).toLocaleDateString("zh-CN") : "";
+    return `<section class="update-release-entry"><div class="update-release-head"><b>${version ? `v${esc(version)}` : index === 0 ? "最新版本" : "上一版本"}</b>${index === 0 ? `<span class="status-pill running">最新</span>` : ""}${published ? `<small>${esc(published)}</small>` : ""}</div><pre>${esc(String(item?.notes || "暂无更新说明").slice(0, 6000))}</pre></section>`;
+  }).join("")}</div></div>`;
+}
+
+function formatUpdateBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} B`;
 }
 
 function safeGitHubReleaseUrl(value) {
@@ -725,11 +825,14 @@ async function refreshUpdateStatus(force=false) {
   const button = $("checkUpdateBtn");
   setButtonBusy(button, true, "检查中");
   try {
-    updateSettings = await api(`/api/updates/check${force ? "?force=1" : ""}`);
+    const status = await api(`/api/updates/check${force ? "?force=1" : ""}`);
+    const download = await api("/api/updates/download/status").catch(()=>null);
+    updateSettings = status;
+    if (download) updateSettings.download_status = download;
     const area = $("updateCheckArea");
     if (area) area.innerHTML = updateStatusHtml();
     syncUpdateNoticeForCurrentSection();
-    if (force) notify(updateSettings.update_available ? `发现新版本 v${String(updateSettings.latest_version || "").replace(/^v/i, "")}` : "当前已经是最新版本", updateSettings.update_available ? "info" : "success");
+    if (force && !updateSettings.update_ignored) notify(updateSettings.update_available ? `发现新版本 v${String(updateSettings.latest_version || "").replace(/^v/i, "")}` : "当前已经是最新版本", updateSettings.update_available ? "info" : "success");
   } catch (error) {
     updateSettings = { error:error.message || "连接 GitHub 失败" };
     const area = $("updateCheckArea");
@@ -739,6 +842,115 @@ async function refreshUpdateStatus(force=false) {
   } finally {
     setButtonBusy($("checkUpdateBtn"), false);
   }
+}
+
+async function setUpdateVersionIgnored(input) {
+  const enabled = Boolean(input?.checked);
+  if (input) input.disabled = true;
+  try {
+    const status = await api(`/api/updates/ignore?enabled=${enabled ? "1" : "0"}`, {method:"POST", body:"{}"});
+    const downloadStatus = updateSettings?.download_status;
+    updateSettings = status;
+    if (downloadStatus) updateSettings.download_status = downloadStatus;
+    if (!enabled && updateNoticeReadVersion === currentUpdateNoticeVersion()) {
+      updateNoticeReadVersion = "";
+      try { sessionStorage.removeItem(UPDATE_NOTICE_SESSION_KEY); } catch {}
+    }
+    const area = $("updateCheckArea");
+    if (area) {
+      area.innerHTML = updateStatusHtml();
+      refreshIcons();
+    }
+    syncUpdateNoticeDots();
+    notify(enabled ? `已忽略 v${currentUpdateNoticeVersion()} 的更新提示` : `已恢复 v${currentUpdateNoticeVersion()} 的更新提示`, "success");
+  } catch (error) {
+    if (input) input.checked = !enabled;
+    notify(error.message || "更新提醒设置保存失败", "error");
+  } finally {
+    const current = $("updateIgnoreCurrentVersion");
+    if (current) current.disabled = false;
+  }
+}
+
+function stopUpdateDownloadPolling() {
+  if (updateDownloadPollingTimer) clearInterval(updateDownloadPollingTimer);
+  updateDownloadPollingTimer = null;
+}
+
+async function refreshUpdateDownloadProgress() {
+  try {
+    const download = await api("/api/updates/download/status");
+    if (!updateSettings) return;
+    updateSettings.download_status = download;
+    const area = $("updateCheckArea");
+    if (area) {
+      area.innerHTML = updateStatusHtml();
+      refreshIcons();
+    }
+    if (download.state !== "downloading") stopUpdateDownloadPolling();
+  } catch {}
+}
+
+function startUpdateDownloadPolling() {
+  if (updateDownloadPollingTimer) return;
+  updateDownloadPollingTimer = setInterval(refreshUpdateDownloadProgress, 500);
+}
+
+async function downloadUpdatePackage(redownload=false) {
+  if (!await confirmModal(
+    `${redownload ? "将重新下载并覆盖当前已下载的更新文件。" : "将从 GitHub Release 下载当前系统的安装产物。"}下载完成后会严格校验 GitHub 提供的 SHA-256 摘要，不会自动安装，也不会关闭当前程序。继续？`,
+    redownload ? "重新下载更新" : "下载并校验更新",
+    redownload ? "重新下载" : "开始下载",
+    "取消"
+  )) return;
+  const button = $("downloadUpdateBtn");
+  setButtonBusy(button, true, "下载中");
+  try {
+    const request = api("/api/updates/download", {method:"POST", body:"{}"});
+    startUpdateDownloadPolling();
+    const result = await request;
+    updateSettings.download_status = result;
+    $("updateCheckArea").innerHTML = updateStatusHtml();
+    refreshIcons();
+    notify("更新安装包已下载并通过 SHA-256 校验", "success");
+  } catch (error) {
+    updateSettings.download_status = {state:"failed", error:error.message};
+    $("updateCheckArea").innerHTML = updateStatusHtml();
+    refreshIcons();
+    notify(error.message, "error");
+  } finally {
+    stopUpdateDownloadPolling();
+    setButtonBusy($("downloadUpdateBtn"), false);
+  }
+}
+
+async function openDownloadedUpdate() {
+  if (updateSettings?.download_status?.package_type === "portable") {
+    return openDownloadedUpdateDirectory();
+  }
+  if (!await confirmModal(
+    "将交给系统打开已校验的安装包。安装程序会处理正在运行的旧版本；如果需要手动操作，也可以取消后选择“打开下载目录”。继续？",
+    "打开更新安装包",
+    "打开安装包",
+    "取消"
+  )) return;
+  await api("/api/updates/open", {method:"POST", body:"{}"});
+  notify("已交给系统打开安装包", "success");
+}
+
+async function openDownloadedUpdateDirectory() {
+  const portable = updateSettings?.download_status?.package_type === "portable";
+  const message = portable
+    ? "将打开便携版所在目录。请先关闭当前 TunnelDesk，再用新版本文件替换旧版本并重新启动；运行中的便携版不会自动覆盖自身。"
+    : "将打开已校验安装包所在目录，方便手动运行、复制或留存安装包。";
+  if (!await confirmModal(
+    message,
+    "打开更新下载目录",
+    "打开目录",
+    "取消"
+  )) return;
+  await api("/api/updates/open-directory", {method:"POST", body:"{}"});
+  notify(portable ? "已打开下载目录，请关闭旧版本后手动替换" : "已打开更新下载目录", "success");
 }
 
 async function openSettingsSection(id) {
@@ -865,13 +1077,29 @@ function updateSecurityBadges() {
 async function saveSecurityOptions() {
   const auth_mode = $("securityAuthMode").value;
   const lan_auth_enabled = $("securityLanAuth").checked;
+  const secure_cookie_mode = $("securitySecureCookieMode")?.value || "auto";
+  const trusted_proxy_enabled = Boolean($("securityTrustedProxyEnabled")?.checked);
+  const trusted_proxy_addresses = String($("securityTrustedProxyAddresses")?.value || "").split(/[\s,]+/).filter(Boolean);
   let confirm_unsafe = false;
   if (auth_mode === "off" || !lan_auth_enabled) {
     confirm_unsafe = await confirmModal("关闭局域网访问密码会让同一局域网内设备直接操作 TunnelDesk。确认关闭？", "高风险设置", "确认关闭", "取消", true);
     if (!confirm_unsafe) return;
   }
-  securitySettings = await api("/api/security", {method:"PUT", body:JSON.stringify({auth_mode, lan_auth_enabled, confirm_unsafe})});
+  securitySettings = await api("/api/security", {method:"PUT", body:JSON.stringify({auth_mode, lan_auth_enabled, secure_cookie_mode, trusted_proxy_enabled, trusted_proxy_addresses, confirm_unsafe})});
   notify("安全策略已保存", "success");
+}
+
+async function saveSessionManagement() {
+  const session_ttl_minutes = Number($("securitySessionTtlMinutes").value);
+  const session_max_sessions = Number($("securitySessionMaxSessions").value);
+  const session_cleanup_minutes = Number($("securitySessionCleanupMinutes").value);
+  securitySettings = await api("/api/security", {
+    method:"PUT",
+    body:JSON.stringify({session_ttl_minutes, session_max_sessions, session_cleanup_minutes})
+  });
+  renderSettings();
+  refreshIcons();
+  notify("会话设置已保存", "success");
 }
 
 async function saveNotificationOptions() {

@@ -1,6 +1,10 @@
 function setLogSearch(value) {
   logSearch = value || "";
   renderLogs().catch(e=>notify(e.message,"error"));
+  clearTimeout(logSearchTimer);
+  if (logViewerState?.path && activeView === "log") {
+    logSearchTimer = setTimeout(() => openLog(logViewerState.path, logViewerState.title, false).catch(e=>notify(e.message,"error")), 250);
+  }
 }
 
 function showLogCleanupMenu(event) {
@@ -81,35 +85,79 @@ function changeLogPage(key, delta) {
 }
 
 async function openLog(path, title, updateTab=true) {
-  const text = await fetch(`/api/logs/read?path=${encodeURIComponent(path)}`).then(async res => {
-    const body = await res.text();
-    if (!res.ok) throw new Error(body || res.statusText);
-    return body;
-  });
-  const contexts = renderLogSearchContexts(text || "");
-  $("view-log").innerHTML = `${contexts}<pre class="log-view">${highlightLogText(text || "日志为空")}</pre>`;
+  const result = await loadLogWindow(path);
+  logViewerState = {path, title, offset:result.offset, text:result.text || "", matches:result.matches || [], matches_truncated:Boolean(result.matches_truncated), has_older:Boolean(result.has_older)};
+  renderLogViewer();
   setWorkspace(title, "日志查看", "log", `log-${path}`, updateTab, true, {kind:"log", path});
 }
 
-function renderLogSearchContexts(text) {
-  const q = logSearch.trim();
-  if (!q) return "";
-  const terms = q.split(/\s+/).filter(Boolean);
-  if (!terms.length) return "";
-  const lines = String(text || "").split(/\r?\n/);
-  const indexes = [];
-  lines.forEach((line, index) => {
-    const lower = line.toLowerCase();
-    if (terms.some(term => lower.includes(term.toLowerCase()))) indexes.push(index);
-  });
-  if (!indexes.length) return `<div class="panel compact-log-context"><strong>没有找到正文命中</strong><span>当前搜索词只匹配到了日志文件名，正文中没有对应内容。</span></div>`;
-  const blocks = indexes.slice(0, 8).map(index => {
-    const start = Math.max(0, index - 2);
-    const end = Math.min(lines.length, index + 3);
-    const body = lines.slice(start, end).map((line, offset) => `${start + offset + 1}: ${line}`).join("\n");
-    return `<pre>${highlightLogText(body)}</pre>`;
-  }).join("");
-  return `<div class="panel compact-log-context"><strong>搜索上下文</strong><span>最多显示前 8 处命中，下面仍保留完整日志。</span>${blocks}</div>`;
+async function loadLogWindow(path, before) {
+  const params = new URLSearchParams({path, limit:String(256 * 1024)});
+  if (before !== undefined) params.set("before", String(before));
+  if (logSearch.trim()) params.set("query", logSearch.trim());
+  return api(`/api/logs/read?${params.toString()}`);
+}
+
+function renderLogViewer() {
+  if (!logViewerState) return;
+  const matches = logViewerState.matches || [];
+  let contexts = "";
+  if (logSearch.trim()) {
+    const blocks = matches.slice(0, 50).map(match => `<pre>${highlightLogText(match.text)}</pre>`).join("");
+    const summary = matches.length
+      ? `共显示 ${matches.length} 处命中${logViewerState.matches_truncated ? "，更多结果已省略" : ""}`
+      : "正文中没有对应内容";
+    contexts = `<div class="panel compact-log-context"><strong>搜索上下文</strong><span>${summary}</span>${blocks}</div>`;
+  }
+  const older = logViewerState.has_older
+    ? `<div class="actions log-load-actions"><button onclick="loadOlderLog()">${icon("chevrons-up")}加载更早内容</button><span class="muted">按 256 KB 分段读取，不会一次载入整个大日志。</span></div>`
+    : "";
+  $("view-log").innerHTML = `${older}${contexts}<pre class="log-view">${highlightLogText(logViewerState.text || "日志为空")}</pre>`;
+  refreshIcons();
+}
+
+async function loadOlderLog() {
+  if (!logViewerState?.has_older) return;
+  const result = await loadLogWindow(logViewerState.path, logViewerState.offset);
+  logViewerState.offset = result.offset;
+  logViewerState.text = `${result.text || ""}${logViewerState.text || ""}`;
+  logViewerState.has_older = Boolean(result.has_older);
+  renderLogViewer();
+}
+
+async function showLogSettings() {
+  const settings = await api("/api/logs/settings");
+  $("modal").innerHTML = `<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="logSettingsTitle">
+    <h2 id="logSettingsTitle">日志设置</h2>
+    <div class="grid">
+      <div><label>保留天数（0 为不限）</label><input id="logSettingDays" type="number" min="0" max="3650" value="${Number(settings.retention_days || 0)}"></div>
+      <div><label>单文件上限（MB）</label><input id="logSettingFileMb" type="number" min="1" max="2048" value="${Number(settings.max_file_size_mb || 50)}"></div>
+      <div><label>全部日志上限（MB）</label><input id="logSettingTotalMb" type="number" min="10" max="102400" value="${Number(settings.max_total_size_mb || 1024)}"></div>
+      <div><label>每个日志保留轮转数</label><input id="logSettingRotations" type="number" min="1" max="10" value="${Number(settings.rotation_files || 3)}"></div>
+    </div>
+    <p class="muted">写入超过单文件上限时自动轮转；后台每 6 小时按天数和总容量清理一次。</p>
+    <div class="actions"><button onclick="closeModal()">取消</button><button onclick="runConfiguredLogCleanup()">立即清理</button><button class="primary" onclick="saveLogSettings()">保存</button></div>
+  </div>`;
+  $("modal").hidden = false;
+}
+
+async function saveLogSettings() {
+  const result = await api("/api/logs/settings", {method:"PUT", body:JSON.stringify({
+    retention_days:Number($("logSettingDays").value),
+    max_file_size_mb:Number($("logSettingFileMb").value),
+    max_total_size_mb:Number($("logSettingTotalMb").value),
+    rotation_files:Number($("logSettingRotations").value)
+  })});
+  closeModal();
+  await renderLogs();
+  notify(`日志设置已保存，清理 ${Number(result.cleanup?.deleted || 0)} 个文件`, "success");
+}
+
+async function runConfiguredLogCleanup() {
+  const result = await api("/api/logs/cleanup", {method:"POST", body:"{}"});
+  closeModal();
+  await renderLogs();
+  notify(`日志清理完成：删除 ${Number(result.deleted || 0)} 个文件`, "success");
 }
 
 function highlightLogText(text) {

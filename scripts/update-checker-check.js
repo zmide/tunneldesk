@@ -86,7 +86,7 @@ async function check(name, callback) {
       now: () => now,
       fetch: async (url, options) => {
         requests.push({ url, options });
-        return response(200, release(), { etag: '"release-1.0.8"' });
+        return response(200, [release(), release("v1.0.7", { body:"Previous release notes" })], { etag: '"release-1.0.8"' });
       }
     });
     const first = await checker.check();
@@ -95,8 +95,10 @@ async function check(name, callback) {
     assert.equal(first.update_available, true);
     assert.equal(first.from_cache, false);
     assert.equal(first.assets[0].name, "TunnelDesk-v1.0.8.dmg");
+    assert.deepEqual(first.release_notes.map(item => item.version), ["1.0.8", "1.0.7"]);
+    assert.equal(first.release_notes[1].notes, "Previous release notes");
     assert.equal(requests.length, 1);
-    assert.match(requests[0].url, /repos\/zmide\/tunneldesk\/releases\/latest$/);
+    assert.match(requests[0].url, /repos\/zmide\/tunneldesk\/releases\?per_page=10$/);
     assert.equal(requests[0].options.headers.Accept, "application/vnd.github+json");
     assert.equal(requests[0].options.headers["X-GitHub-Api-Version"], "2022-11-28");
     assert.match(requests[0].options.headers["User-Agent"], /^TunnelDesk\/1\.0\.7$/);
@@ -228,6 +230,41 @@ async function check(name, callback) {
     assert.deepEqual(notified, ["1.0.8", "1.0.9"]);
     const state = JSON.parse(fs.readFileSync(path.join(project.dataDir, "update-check.json"), "utf8"));
     assert.equal(state.notified_latest_version, "1.0.9");
+  });
+
+  await check("ignored version suppresses update notifications and expires for a newer version", async () => {
+    const project = temporaryProject();
+    const setup = createUpdateChecker({
+      ...project,
+      fetch: async () => response(200, [release("v1.0.8"), release("v1.0.7")])
+    });
+    await setup.check({ force: true });
+    const ignored = setup.setIgnoredCurrentVersion(true);
+    assert.equal(ignored.update_ignored, true);
+    assert.equal(ignored.ignored_version, "1.0.8");
+
+    const notified = [];
+    const sameVersion = createUpdateChecker({
+      ...project,
+      fetch: async () => response(200, [release("v1.0.8"), release("v1.0.7")]),
+      onUpdate: result => notified.push(result.latest_version)
+    });
+    const sameStatus = await sameVersion.check({ force: true });
+    assert.equal(sameStatus.update_ignored, true);
+    assert.deepEqual(notified, []);
+
+    const newer = createUpdateChecker({
+      ...project,
+      fetch: async () => response(200, [release("v1.0.9"), release("v1.0.8")]),
+      onUpdate: result => notified.push(result.latest_version)
+    });
+    const newerStatus = await newer.check({ force: true });
+    assert.equal(newerStatus.update_ignored, false);
+    assert.equal(newerStatus.ignored_version, "1.0.8");
+    assert.deepEqual(newerStatus.release_notes.map(item => item.version), ["1.0.9", "1.0.8"]);
+    assert.deepEqual(notified, ["1.0.9"]);
+    const cleared = newer.setIgnoredCurrentVersion(false);
+    assert.equal(cleared.ignored_version, "");
   });
 
   console.log("GitHub Releases update checker passed.");

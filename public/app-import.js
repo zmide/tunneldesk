@@ -92,7 +92,7 @@ function renderBackupControls() {
   const enabled = Boolean(securitySettings?.encryption_enabled);
   bundleBtn.hidden = !enabled;
   bundleNote.textContent = enabled
-    ? "已启用配置加密：建议下载 .tdbackup.json 加密迁移包。迁移包包含完整数据库和配置加密元数据，不包含 SSH 私钥文件、Web 密码或访问 Token。"
+    ? "已启用配置加密：建议下载 .tdbackup 加密迁移包。迁移包包含完整数据库和配置加密元数据，不包含 SSH 私钥文件、Web 密码或访问 Token。"
     : "未启用配置加密：通常下载普通 .db 数据库备份即可。启用配置加密后才会显示加密迁移包下载入口。";
 }
 
@@ -529,19 +529,12 @@ async function bindImportIdentities() {
   notify(`已暂存 ${bindings.length} 个私钥绑定${remaining ? `，${remaining} 个连接保持未绑定` : ""}`, remaining ? "info" : "success");
 }
 
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  return btoa(binary);
-}
-
-function databaseRestoreRequest(buffer, credentialBindings=[]) {
-  return JSON.stringify({type:"tunneldesk-restore-request-v1", payload_base64:arrayBufferToBase64(buffer), credential_bindings:credentialBindings});
-}
-
-async function inspectDatabaseBackup(buffer, credentialBindings=[]) {
-  const response = await fetch("/api/restore/database/check", {method:"POST", headers:{"Content-Type":"application/json"}, body:databaseRestoreRequest(buffer, credentialBindings)});
+async function inspectDatabaseBackup(file) {
+  const response = await fetch("/api/restore/database/check", {
+    method:"POST",
+    headers:{"Content-Type":"application/octet-stream", "X-TunnelDesk-Filename":encodeURIComponent(file.name || "backup.db")},
+    body:file
+  });
   const result = await response.json().catch(()=>({error:"数据库检查失败"}));
   if (!response.ok) throw new Error(result.error || "数据库检查失败");
   return result;
@@ -550,19 +543,20 @@ async function inspectDatabaseBackup(buffer, credentialBindings=[]) {
 async function restoreDatabaseBackup() {
   const file = $("db_restore_upload")?.files?.[0];
   if (!file) return notify("请选择数据库备份文件", "error");
-  const buffer = await file.arrayBuffer();
   let credentialBindings = [];
   let check;
   try {
-    check = await inspectDatabaseBackup(buffer, credentialBindings);
+    check = await inspectDatabaseBackup(file);
     const selected = await showDatabaseCredentialModal(check.connections || [], {
       subtitle:"请确认每个连接原来的验证方式；可重新绑定私钥、保留备份密码或设置新密码。",
       upload_directory:check.upload_directory,
       password_replacement_allowed:check.password_replacement_allowed
     });
-    if (!selected) return;
+    if (!selected) {
+      await api("/api/restore/database/stage", {method:"DELETE", body:JSON.stringify({restore_token:check.restore_token})}).catch(()=>{});
+      return;
+    }
     credentialBindings = selected;
-    check = await inspectDatabaseBackup(buffer, credentialBindings);
   } catch (error) {
     return notify(error.message || "数据库检查失败", "error");
   }
@@ -572,8 +566,11 @@ async function restoreDatabaseBackup() {
     : "";
   const unboundCount = check.unresolved_identities?.length || 0;
   const unboundText = unboundCount ? `\n\n${unboundCount} 个连接将不绑定私钥，旧机器上的私钥路径会被清除；之后可在连接设置中补充。` : "";
-  if (!await confirmModal(`恢复数据库会覆盖当前连接配置，建议先下载备份。继续？${unboundText}${encryptedText}${encryptedWithoutMetadata}`, "恢复数据库", "继续恢复", "取消", true)) return;
-  const res = await fetch("/api/restore/database", {method:"POST", headers:{"Content-Type":"application/json"}, body:databaseRestoreRequest(buffer, credentialBindings)});
+  if (!await confirmModal(`恢复数据库会覆盖当前连接配置，建议先下载备份。继续？${unboundText}${encryptedText}${encryptedWithoutMetadata}`, "恢复数据库", "继续恢复", "取消", true)) {
+    await api("/api/restore/database/stage", {method:"DELETE", body:JSON.stringify({restore_token:check.restore_token})}).catch(()=>{});
+    return;
+  }
+  const res = await fetch("/api/restore/database", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({restore_token:check.restore_token, credential_bindings:credentialBindings})});
   const body = await res.json().catch(()=>({error:"恢复失败"}));
   if (!res.ok) return notify(body.error || "恢复失败", "error");
   const restoredUnbound = body.unresolved_identities?.length || 0;

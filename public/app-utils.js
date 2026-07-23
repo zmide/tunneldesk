@@ -211,6 +211,7 @@ async function pollNotifications() {
     for (const event of events) {
       lastNotificationId = Math.max(lastNotificationId, Number(event.id || 0));
       if (event.type === "update" && typeof loadCachedUpdateStatus === "function") await loadCachedUpdateStatus();
+      if (event.type === "update" && updateSettings?.update_ignored) continue;
       if (!['off', 'muted'].includes(securitySettings?.notification_mode)) {
         notify(`${event.title}${event.message ? `\n${event.message}` : ""}`, event.level === "error" ? "error" : event.level === "success" ? "success" : "info");
         showDesktopNotification(event);

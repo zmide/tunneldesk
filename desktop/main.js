@@ -557,6 +557,35 @@ async function chooseDesktopDataDir() {
   return result.canceled ? "" : result.filePaths[0];
 }
 
+function validatedUpdatePackagePath(file) {
+  const target = path.resolve(String(file || ""));
+  const updateRoot = path.resolve(path.join(DATA_DIR, "updates"));
+  const relative = path.relative(updateRoot, target);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !fs.existsSync(target)) {
+    throw new Error("更新安装包路径无效");
+  }
+  const supported = process.platform === "win32"
+    ? /\.exe$/i
+    : process.platform === "darwin"
+      ? /\.(?:dmg|zip)$/i
+      : /\.(?:appimage|deb|rpm)$/i;
+  if (!supported.test(target)) throw new Error("更新安装包类型与当前系统不匹配");
+  return target;
+}
+
+async function openUpdatePackage(file) {
+  const target = validatedUpdatePackagePath(file);
+  const error = await shell.openPath(target);
+  if (error) throw new Error(error);
+  return { ok:true };
+}
+
+async function openUpdateDirectory(file) {
+  const target = validatedUpdatePackagePath(file);
+  shell.showItemInFolder(target);
+  return { ok:true };
+}
+
 function quitApp() {
   quitting = true;
   if (trayStateTimer) clearInterval(trayStateTimer);
@@ -589,7 +618,9 @@ app.whenReady().then(async () => {
       desktopIntegration: {
         getSettings: desktopSettingsView,
         saveSettings: saveDesktopSettings,
-        chooseDataDir: chooseDesktopDataDir
+        chooseDataDir: chooseDesktopDataDir,
+        openUpdatePackage,
+        openUpdateDirectory
       }
     });
     if (backend?.ready && typeof backend.ready.then === "function") await backend.ready;

@@ -110,6 +110,8 @@ async function attachTerminal(c, key) {
       convertEol:true,
       fontFamily:c.terminal_font_family || "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize:Number(c.terminal_font_size) || 13,
+      lineHeight:Number(c.terminal_line_height) || 1,
+      fontWeight:c.terminal_font_weight || "normal",
       theme:{
         background:"#0f1720",
         foreground:"#d1e7dd",
@@ -356,7 +358,9 @@ function scheduleTerminalPreferencesSave(connection) {
       body:JSON.stringify({
         terminal_encoding:connection.terminal_encoding || "utf8",
         terminal_font_family:connection.terminal_font_family,
-        terminal_font_size:connection.terminal_font_size
+        terminal_font_size:connection.terminal_font_size,
+        terminal_line_height:connection.terminal_line_height ?? 1,
+        terminal_font_weight:connection.terminal_font_weight || "normal"
       })
     }).catch(error => notify(`终端设置保存失败：${error.message}`, "error"));
   }, 300));
@@ -384,6 +388,8 @@ function showTerminalFontMenu(event, key, connectionId) {
   const connection = connections.find(item => item.id === connectionId);
   if (!connection) return;
   const current = connection.terminal_font_family || terminalFontOptions[0][0];
+  const currentLineHeight = Number(connection.terminal_line_height) || 1;
+  const currentWeight = connection.terminal_font_weight || "normal";
   showActionMenu(event, [
     ...terminalFontOptions.map(([value,label]) => ({
       label,
@@ -391,7 +397,21 @@ function showTerminalFontMenu(event, key, connectionId) {
       run:()=>applyTerminalPreferences(key, connectionId, {terminal_font_family:value}, `终端字体已切换为 ${label}`)
     })),
     {separator:true},
-    {label:"自定义字体…", icon:"pencil", run:()=>setCustomTerminalFont(key, connectionId)}
+    {label:"自定义字体…", icon:"pencil", run:()=>setCustomTerminalFont(key, connectionId)},
+    {separator:true},
+    ...[[1,"紧凑行距 1.0"],[1.2,"行距 1.2"],[1.4,"行距 1.4"],[1.6,"宽松行距 1.6"]].map(([value,label]) => ({
+      label,
+      icon:Number(value) === currentLineHeight ? "check" : "between-horizontal-start",
+      run:()=>applyTerminalPreferences(key, connectionId, {terminal_line_height:Number(value)}, `终端${label}已保存`)
+    })),
+    {separator:true},
+    ...[["normal","常规字重"],["500","中等字重"],["600","半粗字重"],["bold","粗体"]].map(([value,label]) => ({
+      label,
+      icon:value === currentWeight ? "check" : "bold",
+      run:()=>applyTerminalPreferences(key, connectionId, {terminal_font_weight:value}, `终端${label}已保存`)
+    })),
+    {separator:true},
+    {label:"恢复终端显示默认值", icon:"rotate-ccw", run:()=>resetTerminalDisplayPreferences(key, connectionId)}
   ]);
 }
 
@@ -403,6 +423,15 @@ async function setCustomTerminalFont(key, connectionId) {
   else focusTerminalSession(key);
 }
 
+async function resetTerminalDisplayPreferences(key, connectionId) {
+  await applyTerminalPreferences(key, connectionId, {
+    terminal_font_family:terminalFontOptions[0][0],
+    terminal_font_size:13,
+    terminal_line_height:1,
+    terminal_font_weight:"normal"
+  }, "终端字体、字号、行距和字重已恢复默认");
+}
+
 async function applyTerminalPreferences(key, connectionId, changes, successText="终端设置已保存") {
   const connection = connections.find(item => item.id === connectionId);
   if (!connection) return;
@@ -412,7 +441,9 @@ async function applyTerminalPreferences(key, connectionId, changes, successText=
       body:JSON.stringify({
         terminal_encoding:changes.terminal_encoding ?? connection.terminal_encoding ?? "utf8",
         terminal_font_family:changes.terminal_font_family ?? connection.terminal_font_family ?? terminalFontOptions[0][0],
-        terminal_font_size:changes.terminal_font_size ?? connection.terminal_font_size ?? 13
+        terminal_font_size:changes.terminal_font_size ?? connection.terminal_font_size ?? 13,
+        terminal_line_height:changes.terminal_line_height ?? connection.terminal_line_height ?? 1,
+        terminal_font_weight:changes.terminal_font_weight ?? connection.terminal_font_weight ?? "normal"
       })
     });
     Object.assign(connection, settings);
@@ -420,6 +451,8 @@ async function applyTerminalPreferences(key, connectionId, changes, successText=
       if (activeSession.id !== connectionId) continue;
       activeSession.term.options.fontFamily = settings.terminal_font_family;
       activeSession.term.options.fontSize = settings.terminal_font_size;
+      activeSession.term.options.lineHeight = settings.terminal_line_height;
+      activeSession.term.options.fontWeight = settings.terminal_font_weight;
       if (activeSession.socket?.readyState === WebSocket.OPEN) {
         activeSession.socket.send(JSON.stringify({type:"terminal-encoding", encoding:settings.terminal_encoding}));
       }

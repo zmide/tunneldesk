@@ -8,6 +8,7 @@ const { getConnection } = require("./db");
 const { effectiveExtraArgs, securePrivateKeyPermissions } = require("./ssh");
 const { notifyEvent } = require("./notifications");
 const { isPasswordConnection, spawnPasswordCommand } = require("./ssh2-client");
+const { readSftpJobHistory, writeSftpJobHistoryAtomic } = require("./sftp-job-store");
 
 const jobs = new Map();
 const JOBS_FILE = path.join(DATA_DIR, "sftp-jobs.json");
@@ -45,12 +46,7 @@ function finishTransferMetrics(job) {
 
 function readHistory(): any[] {
   if (historyCache) return historyCache;
-  try {
-    const data = JSON.parse(fs.readFileSync(JOBS_FILE, "utf8"));
-    historyCache = Array.isArray(data.jobs) ? data.jobs : [];
-  } catch {
-    historyCache = [];
-  }
+  historyCache = readSftpJobHistory(JOBS_FILE);
   return historyCache;
 }
 
@@ -134,11 +130,7 @@ function clearFinishedSftpJobs() {
 }
 
 function writeJsonJobs(items) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  historyCache = items.slice(0, MAX_HISTORY);
-  const temporary = `${JOBS_FILE}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify({ jobs: historyCache }, null, 2), "utf8");
-  fs.renameSync(temporary, JOBS_FILE);
+  historyCache = writeSftpJobHistoryAtomic(JOBS_FILE, items, MAX_HISTORY);
 }
 
 process.once("beforeExit", () => {

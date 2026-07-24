@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TunnelDesk</title>
-  <link rel="stylesheet" href="/vendor/xterm/xterm.css?v=1.1.4">
-  <link rel="stylesheet" href="/app.css?v=1.1.4">
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css?v=1.1.5">
+  <link rel="stylesheet" href="/app.css?v=1.1.5">
 </head>
 <body>
   <div id="toast" class="toast"></div>
@@ -63,7 +63,11 @@
         </div>
         <div id="notice" class="notice"></div>
       </div>
-      <div id="tabs" class="tabs"></div>
+      <div class="tabs-shell">
+        <button id="tabsScrollLeft" class="tabs-scroll-button" type="button" onclick="scrollWorkspaceTabs(-1)" title="向左滚动标签" aria-label="向左滚动标签" hidden><i data-lucide="chevron-left"></i></button>
+        <div id="tabs" class="tabs" onscroll="updateWorkspaceTabScrollControls()" onwheel="handleWorkspaceTabsWheel(event)"></div>
+        <button id="tabsScrollRight" class="tabs-scroll-button" type="button" onclick="scrollWorkspaceTabs(1)" title="向右滚动标签" aria-label="向右滚动标签" hidden><i data-lucide="chevron-right"></i></button>
+      </div>
       <div class="workspace">
         <section id="view-welcome" class="view"></section>
         <section id="view-terminal" class="view" hidden></section>
@@ -209,19 +213,19 @@
   </div>
 </template>
 
-<script src="/vendor/lucide/lucide.min.js?v=1.1.4"></script>
-<script src="/app-api.js?v=1.1.4"></script>
-<script src="/app-utils.js?v=1.1.4"></script>
-<script src="/app-workspace.js?v=1.1.4"></script>
-<script src="/app-settings.js?v=1.1.4"></script>
-<script src="/app-running.js?v=1.1.4"></script>
-<script src="/app-batch.js?v=1.1.4"></script>
-<script src="/app-logs.js?v=1.1.4"></script>
-<script src="/app-connections.js?v=1.1.4"></script>
-<script src="/app-terminal.js?v=1.1.4"></script>
-<script src="/app-forwards.js?v=1.1.4"></script>
-<script src="/app-import.js?v=1.1.4"></script>
-<script src="/app-sftp.js?v=1.1.4"></script>
-<script src="/app.js?v=1.1.4"></script>
+<script src="/vendor/lucide/lucide.min.js?v=1.1.5"></script>
+<script src="/app-api.js?v=1.1.5"></script>
+<script src="/app-utils.js?v=1.1.5"></script>
+<script src="/app-workspace.js?v=1.1.5"></script>
+<script src="/app-settings.js?v=1.1.5"></script>
+<script src="/app-running.js?v=1.1.5"></script>
+<script src="/app-batch.js?v=1.1.5"></script>
+<script src="/app-logs.js?v=1.1.5"></script>
+<script src="/app-connections.js?v=1.1.5"></script>
+<script src="/app-terminal.js?v=1.1.5"></script>
+<script src="/app-forwards.js?v=1.1.5"></script>
+<script src="/app-import.js?v=1.1.5"></script>
+<script src="/app-sftp.js?v=1.1.5"></script>
+<script src="/app.js?v=1.1.5"></script>
 </body>
 </html>

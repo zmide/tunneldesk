@@ -53,6 +53,7 @@ let sftpFavorites = JSON.parse(localStorage.getItem("sftpFavorites") || "[]");
 let operationPaneCollapsed = localStorage.getItem("operationPaneCollapsed") === "1";
 let runningFilter = localStorage.getItem("runningFilter") || "";
 let securitySettings = null;
+let startupSummaryStatus = null;
 let sftpJobsTimer = null;
 let lastNotificationId = Number(localStorage.getItem("lastNotificationId") || 0);
 let notificationCursorInitialized = false;
@@ -71,11 +72,10 @@ async function loadAll(options={}){
     connections = connectionRows;
     forwardTemplates = templateRows || [];
     if (!editingSettings) securitySettings = security;
-    for (const c of connections) if (selectedId === c.id) groupOpen.add(c.group_name);
-    saveGroupState();
     if (primaryView === "connections") renderConnections();
     else if (primaryView === "running") renderRunningForwards();
     if (activeView === "forwards") renderForwards();
+    if (activeView === "welcome") renderStartupSummary();
   } catch (error) {
     if (!options.silent) throw error;
   } finally {

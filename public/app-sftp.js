@@ -345,7 +345,10 @@ function refreshSftpDirectoryActions() {
   const favoriteButton = $("sftpFavoriteToggle");
   if (favoriteButton) favoriteButton.innerHTML = `${icon("star")}<span>${isCurrentSftpFavorite(tab.id, sftpState.path || ".") ? "取消收藏" : "收藏"}</span>`;
   const favorites = $("sftpFavorites");
-  if (favorites) favorites.innerHTML = renderSftpFavorites(tab.id);
+  if (favorites) {
+    favorites.classList.toggle("is-empty", !sftpFavorites.some(item => item.connectionId === tab.id));
+    favorites.innerHTML = renderSftpFavorites(tab.id);
+  }
   const clipboard = $("sftpClipboardActions");
   if (clipboard) clipboard.innerHTML = renderSftpClipboardActions();
 }
@@ -458,16 +461,18 @@ async function openSftp(id, remotePath=".", updateTab=true) {
   const displayPath = restored ? sftpState.path : remotePath;
   view.innerHTML = `<div class="sftp-shell">
     <div class="sftp-top">
-      <div class="sftp-path-block">
-        <div class="sftp-title">${esc(c.name)}</div>
-        <nav class="sftp-breadcrumb" id="sftpBreadcrumb" aria-label="远程目录路径">${sftpBreadcrumbHtml(id, displayPath)}</nav>
-      </div>
-      <div class="sftp-top-actions">
-        <div class="sftp-search search-field">${icon("search")}<input id="sftpSearch" placeholder="搜索当前目录" value="${esc(sftpState.query)}" oninput="setSftpSearch(this.value)"></div>
-        <button id="sftpFilenameEncodingButton" class="sftp-encoding-button" title="切换 SFTP 文件名编码" onclick="showSftpFilenameEncodingMenu(event,${id})">${icon("languages")}<span>${esc(sftpFilenameEncodingLabel(c))}</span>${icon("chevron-down")}</button>
-        <button class="icon-button" title="打开此连接的终端" aria-label="打开此连接的终端" onclick="openTerminal(${id})">${icon("square-terminal")}</button>
-        <button class="icon-button" title="上级目录" aria-label="上级目录" onclick="openSftp(${id}, parentRemotePath(sftpState.path))">${icon("corner-left-up")}</button>
-        <button class="icon-button" title="刷新目录" aria-label="刷新目录" onclick="refreshSftp()">${icon("refresh-cw")}</button>
+      <div class="sftp-primary-row">
+        <div class="sftp-path-block">
+          <div class="sftp-title">${esc(c.name)}</div>
+          <nav class="sftp-breadcrumb" id="sftpBreadcrumb" aria-label="远程目录路径">${sftpBreadcrumbHtml(id, displayPath)}</nav>
+        </div>
+        <div class="sftp-top-actions">
+          <div class="sftp-search search-field">${icon("search")}<input id="sftpSearch" placeholder="搜索当前目录" value="${esc(sftpState.query)}" oninput="setSftpSearch(this.value)"></div>
+          <button id="sftpFilenameEncodingButton" class="sftp-encoding-button" title="切换 SFTP 文件名编码" onclick="showSftpFilenameEncodingMenu(event,${id})">${icon("languages")}<span>${esc(sftpFilenameEncodingLabel(c))}</span>${icon("chevron-down")}</button>
+          <button class="icon-button" title="打开此连接的终端" aria-label="打开此连接的终端" onclick="openTerminal(${id})">${icon("square-terminal")}</button>
+          <button class="icon-button" title="上级目录" aria-label="上级目录" onclick="openSftp(${id}, parentRemotePath(sftpState.path))">${icon("corner-left-up")}</button>
+          <button class="icon-button" title="刷新目录" aria-label="刷新目录" onclick="refreshSftp()">${icon("refresh-cw")}</button>
+        </div>
       </div>
       <div class="sftp-directory-bar">
         <div class="sftp-directory-actions">
@@ -478,7 +483,7 @@ async function openSftp(id, remotePath=".", updateTab=true) {
           <button onclick="openSftpRecycleBin()">${icon("trash-2")}<span>回收站</span></button>
           <span id="sftpClipboardActions" class="sftp-clipboard-actions">${renderSftpClipboardActions()}</span>
         </div>
-        <div id="sftpFavorites" class="sftp-favorites">${renderSftpFavorites(id)}</div>
+        <div id="sftpFavorites" class="sftp-favorites${sftpFavorites.some(item => item.connectionId === id) ? "" : " is-empty"}">${renderSftpFavorites(id)}</div>
       </div>
       <div class="sftp-selection-bar" id="sftpSelectionBar" hidden>
         <div class="sftp-selected" id="sftpSelectedInfo">已选择 0 项</div>

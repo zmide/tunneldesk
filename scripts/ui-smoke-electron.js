@@ -25,6 +25,7 @@ app.whenReady().then(async () => {
   await new Promise(resolve => setTimeout(resolve, 1200));
   console.log("[ui-smoke] page loaded");
   await window.webContents.executeJavaScript(`(() => {
+    window.__uiSmokeRealLoadAll = loadAll;
     if (Array.isArray(connections) && connections.length) return;
     connections = [{
       id: 900001,
@@ -163,6 +164,190 @@ app.whenReady().then(async () => {
         items: activityItems
       }
     };
+  })()`);
+  console.log("[ui-smoke] refresh state");
+  const refreshStateUi = await window.webContents.executeJavaScript(`(async () => {
+    const fixture = connections[0];
+    const previousApi = api;
+    const previousConnections = connections;
+    const previousTemplates = forwardTemplates;
+    const previousSecurity = securitySettings;
+    const previousSelectedId = selectedId;
+    const previousPrimaryView = primaryView;
+    const previousActiveView = activeView;
+    const previousOpenGroups = [...groupOpen];
+    const previousStoredGroups = localStorage.getItem('openGroups');
+    const previousStartupStatus = startupSummaryStatus;
+    const previousWelcomeHtml = document.querySelector('#view-welcome')?.innerHTML || '';
+    const previousStatuses = (fixture?.forwards || []).map(forward => forward.status);
+    try {
+      if (!fixture) return {found:false};
+      primaryView = 'connections';
+      activeView = 'welcome';
+      selectedId = fixture.id;
+      groupOpen.add(fixture.group_name);
+      saveGroupState();
+      renderConnections();
+      toggleGroupOpen(fixture.group_name);
+      const collapsedBeforeRefresh = !groupOpen.has(fixture.group_name)
+        && !document.querySelector('.group[data-group-name="' + encodeURIComponent(fixture.group_name) + '"] .conn-row');
+      api = async path => {
+        if (path === '/api/connections') return previousConnections;
+        if (path === '/api/forward-templates') return previousTemplates;
+        if (path === '/api/security') return previousSecurity;
+        throw new Error('Unexpected refresh-state request: ' + path);
+      };
+      await window.__uiSmokeRealLoadAll({silent:true});
+      const collapsedAfterRefresh = !groupOpen.has(fixture.group_name)
+        && !document.querySelector('.group[data-group-name="' + encodeURIComponent(fixture.group_name) + '"] .conn-row');
+      const collapsePersisted = !JSON.parse(localStorage.getItem('openGroups') || '[]').includes(fixture.group_name);
+
+      const welcome = document.querySelector('#view-welcome');
+      welcome.innerHTML = '<div id="startupSummary"></div>';
+      startupSummaryStatus = {state:'ready',local_url:'http://127.0.0.1:8088',lan_urls:[]};
+      fixture.forwards[0].status = 'running';
+      renderStartupSummary();
+      const runningText = document.querySelector('#startupSummary')?.textContent || '';
+      fixture.forwards[0].status = 'failed';
+      renderStartupSummary();
+      const failedText = document.querySelector('#startupSummary')?.textContent || '';
+      selectConnection(fixture.id);
+      const explicitSelectionReopens = groupOpen.has(fixture.group_name);
+      return {
+        found:true,
+        collapsedBeforeRefresh,
+        collapsedAfterRefresh,
+        collapsePersisted,
+        explicitSelectionReopens,
+        runningCountLive:runningText.includes('运行中 1') && runningText.includes('异常 0'),
+        failureCountLive:failedText.includes('运行中 0') && failedText.includes('异常 1') && failedText.includes('部分转发异常'),
+        oldStartupLabelsRemoved:!failedText.includes('转发成功') && !failedText.includes('失败 1')
+      };
+    } finally {
+      api = previousApi;
+      connections = previousConnections;
+      forwardTemplates = previousTemplates;
+      securitySettings = previousSecurity;
+      selectedId = previousSelectedId;
+      primaryView = previousPrimaryView;
+      activeView = previousActiveView;
+      startupSummaryStatus = previousStartupStatus;
+      if (fixture) (fixture.forwards || []).forEach((forward,index) => { forward.status = previousStatuses[index]; });
+      groupOpen.clear();
+      previousOpenGroups.forEach(group => groupOpen.add(group));
+      if (previousStoredGroups === null) localStorage.removeItem('openGroups');
+      else localStorage.setItem('openGroups', previousStoredGroups);
+      const welcome = document.querySelector('#view-welcome');
+      if (welcome) welcome.innerHTML = previousWelcomeHtml;
+      renderConnections();
+    }
+  })()`);
+  console.log("[ui-smoke] workspace tab drag");
+  const workspaceTabDragUi = await window.webContents.executeJavaScript(`(() => {
+    const previousTabs = tabs.map(tab => ({...tab}));
+    const previousActiveTabKey = activeTabKey;
+    const previousStoredTabs = localStorage.getItem('workspaceTabs');
+    try {
+      tabs = [
+        {key:'drag-a',title:'bt01 · 终端',subtitle:'root@bt01.example:22',viewName:'welcome',closable:true,kind:'fixture'},
+        {key:'drag-b',title:'测试 · 终端 #5',subtitle:'root@192.0.2.5:22',viewName:'welcome',closable:true,kind:'fixture'},
+        {key:'drag-c',title:'标签 C',subtitle:'',viewName:'welcome',closable:true,kind:'fixture'}
+      ];
+      activeTabKey = 'drag-b';
+      renderTabs();
+      const first = document.querySelector('.tab[data-tab-key="drag-a"]');
+      const last = document.querySelector('.tab[data-tab-key="drag-c"]');
+      const firstRect = first.getBoundingClientRect();
+      const lastRect = last.getBoundingClientRect();
+      const shortTitleRect = last.querySelector('.tab-title').getBoundingClientRect();
+      const shortCloseRect = last.querySelector('.tab-close').getBoundingClientRect();
+      const shortTabUsesContentWidth = lastRect.width < 120
+        && shortCloseRect.left - shortTitleRect.right >= 4
+        && shortCloseRect.left - shortTitleRect.right <= 8;
+      first.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerId:71,pointerType:'mouse',button:0,clientX:firstRect.left+8,clientY:firstRect.top+8}));
+      window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,cancelable:true,pointerId:71,pointerType:'mouse',button:0,clientX:lastRect.right-2,clientY:firstRect.top+8}));
+      const beganImmediately = Boolean(workspaceTabDrag?.dragging && first.classList.contains('tab-dragging') && document.body.classList.contains('workspace-tab-drag-active'));
+      const touchReady = getComputedStyle(first).touchAction === 'pan-y';
+      const commonTitleFits = first.querySelector('.tab-title').scrollWidth <= first.querySelector('.tab-title').clientWidth;
+      const sessionTitle = document.querySelector('.tab[data-tab-key="drag-b"] .tab-title');
+      const numberedSessionTitleFits = sessionTitle.scrollWidth <= sessionTitle.clientWidth;
+      const compactTabFont = Math.abs(parseFloat(getComputedStyle(first).fontSize) - 12) < 0.1;
+      const fullTitleTooltip = first.title === 'bt01 · 终端 - root@bt01.example:22';
+      const liveOrder = [...document.querySelectorAll('#tabs .tab')].map(tab => tab.dataset.tabKey);
+      window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerId:71,pointerType:'mouse',button:0,clientX:lastRect.right-2,clientY:firstRect.top+8}));
+      const savedOrder = tabs.map(tab => tab.key);
+      const persistedOrder = JSON.parse(localStorage.getItem('workspaceTabs') || '{}').tabs?.map(tab => tab.key) || [];
+      const activePreserved = activeTabKey === 'drag-b';
+      const clickSuppressed = workspaceTabSuppressClickUntil > Date.now();
+
+      const beforeCancel = tabs.map(tab => tab.key);
+      const cancelTab = document.querySelector('.tab[data-tab-key="drag-b"]');
+      const cancelTarget = document.querySelector('.tab[data-tab-key="drag-a"]');
+      const cancelRect = cancelTab.getBoundingClientRect();
+      const cancelTargetRect = cancelTarget.getBoundingClientRect();
+      cancelTab.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerId:72,pointerType:'touch',button:0,clientX:cancelRect.left+8,clientY:cancelRect.top+8}));
+      window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,cancelable:true,pointerId:72,pointerType:'touch',button:0,clientX:cancelTargetRect.right-2,clientY:cancelRect.top+8}));
+      const cancelStarted = Boolean(workspaceTabDrag?.dragging);
+      window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,cancelable:true,pointerId:72,pointerType:'touch',button:0,clientX:cancelTargetRect.right-2,clientY:cancelRect.top+8}));
+      const cancelRestored = JSON.stringify(tabs.map(tab => tab.key)) === JSON.stringify(beforeCancel)
+        && JSON.stringify([...document.querySelectorAll('#tabs .tab')].map(tab => tab.dataset.tabKey)) === JSON.stringify(beforeCancel);
+
+      const closeControl = document.querySelector('.tab[data-tab-key="drag-a"] .tab-close');
+      closeControl.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerId:73,pointerType:'mouse',button:0}));
+      const closeDoesNotDrag = workspaceTabDrag === null;
+      moveWorkspaceTab('drag-a', -1);
+      const fallbackMove = JSON.stringify(tabs.map(tab => tab.key)) === JSON.stringify(['drag-b','drag-a','drag-c']);
+      const tabShell = document.querySelector('.tabs-shell');
+      const tabStrip = document.querySelector('#tabs');
+      const leftScroll = document.querySelector('#tabsScrollLeft');
+      const rightScroll = document.querySelector('#tabsScrollRight');
+      const previousShellWidth = tabShell.style.width;
+      tabShell.style.width = '280px';
+      tabStrip.scrollLeft = 0;
+      updateWorkspaceTabScrollControls();
+      const scrollControlsVisible = !leftScroll.hidden && !rightScroll.hidden && leftScroll.disabled && !rightScroll.disabled;
+      const nativeScrollbarHidden = getComputedStyle(tabStrip).scrollbarWidth === 'none'
+        && tabStrip.offsetHeight === tabStrip.clientHeight;
+      tabStrip.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:80}));
+      const wheelScrollsTabs = tabStrip.scrollLeft > 0;
+      tabShell.style.width = previousShellWidth;
+      tabStrip.scrollLeft = 0;
+      updateWorkspaceTabScrollControls();
+      const scrollControlsHideWhenFit = leftScroll.hidden && rightScroll.hidden
+        && getComputedStyle(leftScroll).display === 'none'
+        && getComputedStyle(rightScroll).display === 'none';
+      return {
+        beganImmediately,
+        touchReady,
+        commonTitleFits,
+        numberedSessionTitleFits,
+        compactTabFont,
+        shortTabUsesContentWidth,
+        fullTitleTooltip,
+        liveOrder,
+        savedOrder,
+        persistedOrder,
+        activePreserved,
+        clickSuppressed,
+        cancelStarted,
+        cancelRestored,
+        closeDoesNotDrag,
+        fallbackMove,
+        scrollControlsVisible,
+        scrollControlsHideWhenFit,
+        nativeScrollbarHidden,
+        wheelScrollsTabs
+      };
+    } finally {
+      if (workspaceTabDrag) finishWorkspaceTabDrag(null, true);
+      tabs = previousTabs;
+      activeTabKey = previousActiveTabKey;
+      window.restoringTabs = true;
+      renderTabs();
+      window.restoringTabs = false;
+      if (previousStoredTabs === null) localStorage.removeItem('workspaceTabs');
+      else localStorage.setItem('workspaceTabs', previousStoredTabs);
+    }
   })()`);
   console.log("[ui-smoke] primary pages");
   const pages = await window.webContents.executeJavaScript(`(async () => {
@@ -747,10 +932,35 @@ app.whenReady().then(async () => {
       .filter(button=>!button.classList.contains('terminal-dropdown-button'))
       .flatMap(button=>[...button.querySelectorAll(':scope > span')])
       .every(span=>getComputedStyle(span).display==='none');
+    const compactActionsLeftAligned=Math.abs(toolbarButtons[0].getBoundingClientRect().left-toolbarRect.left)<1;
     const narrowToolbarFits=compactLabelsHidden&&toolbarButtons.every(button=>{
       const rect=button.getBoundingClientRect();
       return rect.left>=toolbarRect.left-0.5&&rect.right<=toolbarRect.right+0.5;
     });
+    toolbarFixture.style.width='720px';
+    const widerToolbar=toolbarFixture.querySelector('.terminal-actions');
+    const widerToolbarRect=widerToolbar.getBoundingClientRect();
+    const widerActionsLeftAligned=Math.abs(widerToolbar.querySelector('button').getBoundingClientRect().left-widerToolbarRect.left)<1;
+    const narrowToolbarLeftAligned=compactActionsLeftAligned&&widerActionsLeftAligned;
+    toolbarFixture.style.width='540px';
+    const responsiveView=document.querySelector('#view-terminal');
+    const previousResponsiveStyle=responsiveView.style.cssText;
+    responsiveView.style.width='1000px';
+    responsiveView.style.flex='0 0 1000px';
+    const responsiveToolbar=toolbarFixture.cloneNode(true);
+    responsiveToolbar.style.width='100%';
+    responsiveView.prepend(responsiveToolbar);
+    const responsiveTitleRect=responsiveToolbar.querySelector('.terminal-title-row').getBoundingClientRect();
+    const responsiveActions=responsiveToolbar.querySelector('.terminal-actions');
+    const responsiveActionsRect=responsiveActions.getBoundingClientRect();
+    const responsiveButtons=[...responsiveActions.querySelectorAll('button')];
+    const responsiveToolbarFits=responsiveActionsRect.top>=responsiveTitleRect.bottom-0.5
+      && responsiveButtons.every(button=>{
+        const rect=button.getBoundingClientRect();
+        return rect.left>=responsiveActionsRect.left-0.5&&rect.right<=responsiveActionsRect.right+0.5;
+      });
+    responsiveToolbar.remove();
+    responsiveView.style.cssText=previousResponsiveStyle;
     const backFixture=document.createElement('div');
     backFixture.className='terminal-title-row';
     backFixture.innerHTML='<button class="terminal-mobile-back">'+icon('arrow-left')+'<span>返回</span></button>';
@@ -765,7 +975,7 @@ app.whenReady().then(async () => {
     terminalLatencyVisible = previousLatencyVisible;
     if (previousLatencyStored === null) localStorage.removeItem('terminalLatencyVisible');
     else localStorage.setItem('terminalLatencyVisible', previousLatencyStored);
-    return {found:true,labels,metrics,desktopBackHidden,binaryType,binaryWrite,encodingMenuOpened,fontMenuOpened,statusHoverShowsFull,narrowToolbarFits,latencyMeasured,latencyCanDisable,latencyCanEnable};
+    return {found:true,labels,metrics,desktopBackHidden,binaryType,binaryWrite,encodingMenuOpened,fontMenuOpened,statusHoverShowsFull,narrowToolbarFits,narrowToolbarLeftAligned,responsiveToolbarFits,latencyMeasured,latencyCanDisable,latencyCanEnable};
   })()`);
   console.log("[ui-smoke] log settings");
   const logSettingsUi = await window.webContents.executeJavaScript(`(async () => {
@@ -819,6 +1029,7 @@ app.whenReady().then(async () => {
       setWorkspace('切换测试', 'UI', 'welcome', 'sftp-switch-fixture', false, true);
       await openSftp(connection.id, '/Users/junruo/Public', false);
       const stickyTop = view.querySelector('.sftp-top');
+      const primaryRow = view.querySelector('.sftp-primary-row');
       const breadcrumb = view.querySelector('.sftp-breadcrumb');
       const directoryBar = view.querySelector('.sftp-directory-bar');
       const clipboardActions = view.querySelector('#sftpClipboardActions');
@@ -852,9 +1063,63 @@ app.whenReady().then(async () => {
       const filenameEncodingLabels = [...document.querySelectorAll('#actionMenu button span')].map(item=>item.textContent.trim());
       const filenameEncodingMenu = ['UTF-8','GB18030','GBK','Big5','Shift_JIS','EUC-KR','ISO-8859-1'].every(label=>filenameEncodingLabels.includes(label));
       hideActionMenu();
+      const favorites = view.querySelector('#sftpFavorites');
+      const shell = view.querySelector('.sftp-shell');
+      const previousFavoritesHtml = favorites.innerHTML;
+      const previousFavoritesClass = favorites.className;
+      const previousShellStyle = shell.style.cssText;
+      const previousStickyTopStyle = stickyTop.style.cssText;
+      const emptyFavoritesRect = favorites.getBoundingClientRect();
+      const emptyDirectoryRect = directoryBar.getBoundingClientRect();
+      const jobsRect = view.querySelector('#sftpJobs').getBoundingClientRect();
+      const emptyFavoritesMinHeight = parseFloat(getComputedStyle(favorites).minHeight);
+      const emptyFavoritesCompact = emptyFavoritesRect.height < 50
+        && (!Number.isFinite(emptyFavoritesMinHeight) || emptyFavoritesMinHeight < 60)
+        && emptyDirectoryRect.height < 60
+        && jobsRect.top - emptyDirectoryRect.bottom < 32;
+      favorites.classList.remove('is-empty');
+      favorites.innerHTML = '<span class="sftp-favorites-label">常用目录</span><button type="button">根目录</button>';
+      const naturalDirectoryHeight = directoryBar.getBoundingClientRect().height;
+      const naturalTopHeight = stickyTop.getBoundingClientRect().height;
+      shell.style.height = '900px';
+      const tallShellDirectoryHeight = directoryBar.getBoundingClientRect().height;
+      const tallShellTopHeight = stickyTop.getBoundingClientRect().height;
+      const wideDirectoryBarCompact = naturalDirectoryHeight < 60
+        && tallShellDirectoryHeight < 60
+        && naturalTopHeight < 180
+        && tallShellTopHeight < 180
+        && Math.abs(tallShellTopHeight - naturalTopHeight) < 1
+        && getComputedStyle(shell).alignContent === 'start'
+        && getComputedStyle(stickyTop).display === 'flex'
+        && getComputedStyle(stickyTop).flexDirection === 'column';
+      shell.style.cssText = previousShellStyle;
+      stickyTop.style.cssText = previousStickyTopStyle;
+      favorites.className = previousFavoritesClass;
+      favorites.innerHTML = previousFavoritesHtml;
+      const narrowHint = document.createElement('span');
+      narrowHint.className = 'muted';
+      narrowHint.textContent = '收藏当前目录后可快速跳转';
+      favorites.appendChild(narrowHint);
+      const previousFavoritesEmpty = favorites.classList.contains('is-empty');
+      favorites.classList.add('is-empty');
+      const previousViewStyle = view.style.cssText;
+      view.style.width = '650px';
+      view.style.flex = '0 0 650px';
+      const narrowDirectoryRect = directoryBar.getBoundingClientRect();
+      const narrowDirectoryActionsRect = directoryBar.querySelector('.sftp-directory-actions').getBoundingClientRect();
+      const narrowTopRect = stickyTop.getBoundingClientRect();
+      const narrowDirectoryBarCompact = getComputedStyle(directoryBar).flexDirection === 'column'
+        && narrowDirectoryRect.height < 100
+        && narrowTopRect.height < 200
+        && narrowDirectoryActionsRect.left >= narrowDirectoryRect.left - 0.5
+        && narrowDirectoryActionsRect.right <= narrowDirectoryRect.right + 0.5
+        && getComputedStyle(favorites).display === 'none';
+      view.style.cssText = previousViewStyle;
+      favorites.classList.toggle('is-empty', previousFavoritesEmpty);
+      narrowHint.remove();
 
       directoryActionsUi = {
-        found:Boolean(stickyTop && breadcrumb && directoryBar),
+        found:Boolean(stickyTop && primaryRow && breadcrumb && directoryBar),
         stickyPosition:stickyTop ? getComputedStyle(stickyTop).position : '',
         barInsideSticky:Boolean(stickyTop?.contains(directoryBar)),
         barAfterBreadcrumb:Boolean(breadcrumb && directoryBar && (breadcrumb.compareDocumentPosition(directoryBar) & Node.DOCUMENT_POSITION_FOLLOWING)),
@@ -867,6 +1132,9 @@ app.whenReady().then(async () => {
         crossHostCopyEnabled,
         crossHostMoveDisabled,
         filenameEncodingMenu,
+        emptyFavoritesCompact,
+        wideDirectoryBarCompact,
+        narrowDirectoryBarCompact,
         terminalJump:Boolean(view.querySelector('button[title="打开此连接的终端"]')),
         reusedWithSilentRefresh:sftpPageLoads === 2
           && sftpPageLoadOptions[1]?.silent === true
@@ -1225,6 +1493,19 @@ app.whenReady().then(async () => {
   await new Promise(resolve => setTimeout(resolve, 400));
   const mobile = await window.webContents.executeJavaScript(`(async()=>{
     document.documentElement.dataset.uiSmokeStage='mobile-sftp';
+    const leftPane=document.querySelector('.left-pane');
+    const content=document.querySelector('#content');
+    const mobileWorkspaceVisible=()=>leftPane?.classList.contains('mobile-hide')&&content?.classList.contains('mobile-show');
+    const mobileExplorerVisible=()=>!leftPane?.classList.contains('mobile-hide')&&!content?.classList.contains('mobile-show');
+    const workspaceStateSurvivesResize=(input,value)=>{
+      if(!input)return false;
+      const viewBefore=activeView;
+      const tabBefore=activeTabKey;
+      input.value=value;
+      input.focus();
+      window.dispatchEvent(new Event('resize'));
+      return mobileWorkspaceVisible()&&document.activeElement===input&&input.value===value&&activeView===viewBefore&&activeTabKey===tabBefore;
+    };
     const mobileSftpLoad = loadSftpPage;
     const mobileSftpJobs = refreshSftpJobs;
     const mobileSftpTimer = startSftpJobsTimer;
@@ -1238,16 +1519,23 @@ app.whenReady().then(async () => {
       found:Boolean(mobileSftpActions),
       fits:Boolean(mobileSftpActions && mobileSftpActions.scrollWidth <= mobileSftpActions.clientWidth + 0.5),
       encodingVisible:Boolean(document.querySelector('#sftpFilenameEncodingButton')?.getBoundingClientRect().width),
-      terminalJumpVisible:Boolean(document.querySelector('.sftp-top-actions button[title="打开此连接的终端"]')?.getBoundingClientRect().width)
+      terminalJumpVisible:Boolean(document.querySelector('.sftp-top-actions button[title="打开此连接的终端"]')?.getBoundingClientRect().width),
+      searchFontSize:parseFloat(getComputedStyle(document.querySelector('#sftpSearch')).fontSize)
     };
+    const sftpWorkspaceAfterKeyboardResize=workspaceStateSurvivesResize(document.querySelector('#sftpSearch'),'mobile-resize-sftp');
     loadSftpPage = mobileSftpLoad;
     refreshSftpJobs = mobileSftpJobs;
     startSftpJobsTimer = mobileSftpTimer;
+    openBatchCommand(false);
+    const batchCommandFontSize=parseFloat(getComputedStyle(document.querySelector('#batchCommandText')).fontSize);
+    const batchWorkspaceAfterKeyboardResize=workspaceStateSurvivesResize(document.querySelector('#batchCommandText'),'printf mobile-resize-batch');
+    newConnection();
+    const connectionNameFontSize=parseFloat(getComputedStyle(document.querySelector('#conn_name')).fontSize);
+    const connectionWorkspaceAfterKeyboardResize=workspaceStateSurvivesResize(document.querySelector('#conn_name'),'mobile-resize-connection');
     showPrimary('import');
+    window.dispatchEvent(new Event('resize'));
     await new Promise(resolve=>setTimeout(resolve,80));
-    const leftPane=document.querySelector('.left-pane');
-    const content=document.querySelector('#content');
-    const importExplorerFirst=!leftPane?.classList.contains('mobile-hide')&&!content?.classList.contains('mobile-show');
+    const importExplorerFirst=mobileExplorerVisible();
     document.querySelector('#explorerTools [data-explorer-section="import-source"]')?.click();
     for(let i=0;i<40&&(activeView!=='import'||!content?.classList.contains('mobile-show'));i+=1)await new Promise(resolve=>setTimeout(resolve,25));
     const layout={
@@ -1259,7 +1547,19 @@ app.whenReady().then(async () => {
       active:document.querySelector('.mobile-tabs .active')?.getAttribute('aria-label')||'',
       importExplorerFirst,
       importWorkspaceEntered:leftPane?.classList.contains('mobile-hide')&&content?.classList.contains('mobile-show'),
-      sftp:mobileSftpLayout
+      sftp:mobileSftpLayout,
+      workspaceFormFonts:{
+        sftpSearch:mobileSftpLayout.searchFontSize,
+        batchCommand:batchCommandFontSize,
+        connectionName:connectionNameFontSize,
+        preventsFocusZoom:[mobileSftpLayout.searchFontSize,batchCommandFontSize,connectionNameFontSize].every(size=>size>=16)
+      },
+      workspaceResizeNavigation:{
+        sftpStaysInWorkspace:sftpWorkspaceAfterKeyboardResize,
+        batchStaysInWorkspace:batchWorkspaceAfterKeyboardResize,
+        connectionFormStaysInWorkspace:connectionWorkspaceAfterKeyboardResize,
+        explicitExplorerStaysVisible:importExplorerFirst
+      }
     };
     const mobileTabs=document.querySelector('.mobile-tabs');
     const mobileTabItems=[...mobileTabs.querySelectorAll('button, a')];
@@ -1344,8 +1644,8 @@ app.whenReady().then(async () => {
     layout.menuClosed=!document.querySelector('#actionMenu')&&!document.querySelector('#actionMenuBackdrop');
     document.documentElement.dataset.uiSmokeStage='mobile-terminal-back';
     const terminalBackFixture=document.createElement('div');
-    terminalBackFixture.className='terminal-title-row';
-    terminalBackFixture.innerHTML='<button class="terminal-mobile-back" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="backToExplorer()">'+icon('arrow-left')+'<span>返回</span></button>';
+    terminalBackFixture.className='terminal-toolbar';
+    terminalBackFixture.innerHTML='<div class="terminal-title-row"><button class="terminal-mobile-back" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="backToExplorer()">'+icon('arrow-left')+'<span>返回</span></button><span class="terminal-connection-dot"></span><span class="terminal-status">root@example.invalid:22 · 已连接</span><span class="terminal-latency good">延迟 5 ms</span></div><div class="actions terminal-actions"><button class="icon-button">'+icon('folder-open')+'</button><button>'+icon('keyboard')+'<span>快捷键</span></button></div>';
     document.body.appendChild(terminalBackFixture);
     document.querySelector('.left-pane')?.classList.add('mobile-hide');
     document.querySelector('#content')?.classList.add('mobile-show');
@@ -1353,12 +1653,32 @@ app.whenReady().then(async () => {
     const terminalBackButton=terminalBackFixture.querySelector('.terminal-mobile-back');
     const terminalBackStyle=getComputedStyle(terminalBackButton);
     const terminalBackRect=terminalBackButton.getBoundingClientRect();
+    const terminalMobileToolbarRect=terminalBackFixture.getBoundingClientRect();
+    const terminalMobileTitleRect=terminalBackFixture.querySelector('.terminal-title-row').getBoundingClientRect();
+    const terminalMobileActionsRect=terminalBackFixture.querySelector('.terminal-actions').getBoundingClientRect();
     const terminalBackVisible=terminalBackStyle.display!=='none'&&terminalBackRect.width>0&&terminalBackRect.height>0;
+    showTerminalFontMenu(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:180,clientY:100}),'mobile-font-smoke',connections[0].id);
+    const mobileFontMenu=document.querySelector('#actionMenu');
+    const mobileFontMenuRect=mobileFontMenu?.getBoundingClientRect();
+    const mobileFontClose=mobileFontMenu?.querySelector('.action-menu-close');
+    const mobileFontButtons=[...(mobileFontMenu?.querySelectorAll('button')||[])];
+    layout.terminalFontMenu={
+      opened:Boolean(mobileFontMenu&&document.querySelector('#actionMenuBackdrop')),
+      withinViewport:Boolean(mobileFontMenuRect&&mobileFontMenuRect.left>=-0.5&&mobileFontMenuRect.right<=innerWidth+0.5&&mobileFontMenuRect.top>=-0.5&&mobileFontMenuRect.bottom<=innerHeight+0.5),
+      compact:Boolean(mobileFontMenuRect&&mobileFontMenuRect.height<=innerHeight*0.69),
+      scrollable:Boolean(mobileFontMenu&&mobileFontMenu.scrollHeight>mobileFontMenu.clientHeight&&getComputedStyle(mobileFontMenu).overflowY==='auto'),
+      closeSticky:getComputedStyle(mobileFontClose).position==='sticky',
+      touchTargets:mobileFontButtons.every(button=>button.getBoundingClientRect().height>=39.5)
+    };
+    hideActionMenu();
     terminalBackButton.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch'}));
     terminalBackButton.click();
     layout.terminalBack={
       visible:terminalBackVisible,
       display:terminalBackStyle.display,
+      compactToolbar:terminalMobileTitleRect.height<=48&&terminalMobileToolbarRect.height<=96&&terminalMobileActionsRect.top>=terminalMobileTitleRect.bottom-0.5,
+      titleHeight:terminalMobileTitleRect.height,
+      toolbarHeight:terminalMobileToolbarRect.height,
       returned:!document.querySelector('.left-pane')?.classList.contains('mobile-hide')&&!document.querySelector('#content')?.classList.contains('mobile-show')&&!document.body.classList.contains('mobile-terminal-active')
     };
     terminalBackFixture.remove();
@@ -1369,10 +1689,12 @@ app.whenReady().then(async () => {
     const image = await window.webContents.capturePage();
     require("node:fs").writeFileSync(path.join(process.cwd(), "data", "ui-smoke-mobile.png"), image.toPNG());
   }
-  console.log(JSON.stringify({ ...result, pages, navigationUi, aboutUi, desktopMenu, runningActions, authUi, saveAndClearUi, notificationUi, restoreKeyUi, restoreCredentialUi, terminalUi, logSettingsUi, sftpUi, clipboardUi, dark, mobile, errors }, null, 2));
+  console.log(JSON.stringify({ ...result, refreshStateUi, workspaceTabDragUi, pages, navigationUi, aboutUi, desktopMenu, runningActions, authUi, saveAndClearUi, notificationUi, restoreKeyUi, restoreCredentialUi, terminalUi, logSettingsUi, sftpUi, clipboardUi, dark, mobile, errors }, null, 2));
   const overflow = pages.some(page => page.scrollWidth > page.width) || mobile.scrollWidth > mobile.width || mobile.bodyWidth > mobile.width;
   const darkFailed = dark.theme !== "dark" || dark.buttonBackground === "rgb(255, 255, 255)";
   const menuFailed = !desktopMenu.opened || !desktopMenu.closedOnScroll || !mobile.menuOpened || !mobile.menuClosed;
+  const refreshStateUiFailed = !refreshStateUi.found || !refreshStateUi.collapsedBeforeRefresh || !refreshStateUi.collapsedAfterRefresh || !refreshStateUi.collapsePersisted || !refreshStateUi.explicitSelectionReopens || !refreshStateUi.runningCountLive || !refreshStateUi.failureCountLive || !refreshStateUi.oldStartupLabelsRemoved;
+  const workspaceTabDragUiFailed = !workspaceTabDragUi.beganImmediately || !workspaceTabDragUi.touchReady || !workspaceTabDragUi.commonTitleFits || !workspaceTabDragUi.numberedSessionTitleFits || !workspaceTabDragUi.compactTabFont || !workspaceTabDragUi.shortTabUsesContentWidth || !workspaceTabDragUi.fullTitleTooltip || JSON.stringify(workspaceTabDragUi.liveOrder) !== JSON.stringify(['drag-b','drag-c','drag-a']) || JSON.stringify(workspaceTabDragUi.savedOrder) !== JSON.stringify(['drag-b','drag-c','drag-a']) || JSON.stringify(workspaceTabDragUi.persistedOrder) !== JSON.stringify(['drag-b','drag-c','drag-a']) || !workspaceTabDragUi.activePreserved || !workspaceTabDragUi.clickSuppressed || !workspaceTabDragUi.cancelStarted || !workspaceTabDragUi.cancelRestored || !workspaceTabDragUi.closeDoesNotDrag || !workspaceTabDragUi.fallbackMove || !workspaceTabDragUi.scrollControlsVisible || !workspaceTabDragUi.scrollControlsHideWhenFit || !workspaceTabDragUi.nativeScrollbarHidden || !workspaceTabDragUi.wheelScrollsTabs;
   const runningActionsFailed = runningActions.found && (Math.abs(runningActions.open.width - runningActions.retry.width) > 1 || Math.abs(runningActions.open.height - runningActions.retry.height) > 1);
   const authUiFailed = !authUi.found || !Object.values(authUi.passwordMode).every(Boolean) || !Object.values(authUi.keyMode).every(Boolean);
   const saveAndClearUiFailed = !Object.values(saveAndClearUi).every(Boolean);
@@ -1390,10 +1712,11 @@ app.whenReady().then(async () => {
   const navigationUiFailed = !navigationUi.settingsOnlySections || !navigationUi.settingsSectionMode || !navigationUi.settingsVertical || settingsSectionsFailed || runtimeUiFailed || sessionUiFailed || navigationUi.duplicateSettingsNav !== 0 || navigationUi.inlineUpdateDotPresent || !navigationUi.importOwnSections || !navigationUi.importSectionMode || !navigationUi.importVertical || !navigationUi.importResultsMerged || !importSourceCheck?.resultsVisible || importSectionsFailed || !navigationUi.treeHidden || navigationUi.dotsBeforeRead.some(dot=>!dot.found||dot.hidden!==false) || navigationUi.dotsAfterRead.some(dot=>!dot.found||dot.hidden!==true) || navigationUi.storedReadVersion !== '1.0.9' || !navigationUi.sameVersionStaysRead || !navigationUi.ignoredVersionHidesNotice || !navigationUi.newerAfterIgnoredShowsNotice || !navigationUi.newerVersionShowsAgain;
   const aboutUiFailed = Boolean(aboutUi.error) || !aboutUi.found || !aboutUi.aboutSelected || aboutUi.duplicateSettingsNav !== 0 || !aboutUi.versionMatches || !aboutUi.licenseMetadata || !aboutUi.sourceLink || !aboutUi.modalOpen || !aboutUi.accessible || !aboutUi.fullText || !aboutUi.textScrollable || !aboutUi.cardWithinViewport || !aboutUi.closeFocused || !aboutUi.closedByEscape || !aboutUi.focusReturned || !aboutUi.followupBackdropClean || !aboutUi.followupResolved || !aboutUi.updateUi;
   const expectedSettingsActions = ['通用设置','安全设置','通知设置','启动与运行','关于'];
-  const mobileNavigationFailed = !mobile.importExplorerFirst || !mobile.importWorkspaceEntered || !mobile.sftp?.found || !mobile.sftp?.fits || !mobile.sftp?.encodingVisible || !mobile.sftp?.terminalJumpVisible || !mobile.settingsNavigation?.explorerFirst || !mobile.settingsNavigation?.workspaceEntered || !mobile.settingsNavigation?.vertical || !mobile.settingsNavigation?.selectedOnly || !mobile.settingsNavigation?.noDuplicateMenu || JSON.stringify(mobile.settingsNavigation?.labels)!==JSON.stringify(expectedSettingsActions) || mobile.mobileTabs?.count !== 7 || !mobile.mobileTabs?.labelsHidden || !mobile.mobileTabs?.iconsCentered || !mobile.mobileTabs?.fits || !mobile.groupActionVisible || !mobile.groupActionMenuOpened || !mobile.groupControlsInline || !mobile.groupDragFirst || !mobile.groupCancelDoesNotSave || !mobile.groupDragSurvivesRefresh;
+  const mobileResizeNavigationFailed = !mobile.workspaceResizeNavigation || !Object.values(mobile.workspaceResizeNavigation).every(Boolean);
+  const mobileNavigationFailed = mobileResizeNavigationFailed || !mobile.importExplorerFirst || !mobile.importWorkspaceEntered || !mobile.sftp?.found || !mobile.sftp?.fits || !mobile.sftp?.encodingVisible || !mobile.sftp?.terminalJumpVisible || !mobile.workspaceFormFonts?.preventsFocusZoom || !mobile.settingsNavigation?.explorerFirst || !mobile.settingsNavigation?.workspaceEntered || !mobile.settingsNavigation?.vertical || !mobile.settingsNavigation?.selectedOnly || !mobile.settingsNavigation?.noDuplicateMenu || JSON.stringify(mobile.settingsNavigation?.labels)!==JSON.stringify(expectedSettingsActions) || mobile.mobileTabs?.count !== 7 || !mobile.mobileTabs?.labelsHidden || !mobile.mobileTabs?.iconsCentered || !mobile.mobileTabs?.fits || !mobile.groupActionVisible || !mobile.groupActionMenuOpened || !mobile.groupControlsInline || !mobile.groupDragFirst || !mobile.groupCancelDoesNotSave || !mobile.groupDragSurvivesRefresh;
   const mobileAboutFailed = !mobile.about || !mobile.about.modalOpen || !mobile.about.cardWithinViewport || !mobile.about.textWithinCard || !mobile.about.textScrollable || !mobile.about.closeVisible || !mobile.about.closed;
   const terminalLabels = ['复制选中','复制全部输出','粘贴','全选终端','清屏','滚动到底部','减小字体','增大字体','重新连接'];
-  const terminalUiFailed = !terminalUi.found || !terminalUi.desktopBackHidden || terminalUi.binaryType !== 'arraybuffer' || !terminalUi.binaryWrite || !terminalUi.encodingMenuOpened || !terminalUi.fontMenuOpened || !terminalUi.statusHoverShowsFull || !terminalUi.narrowToolbarFits || !terminalUi.latencyMeasured || !terminalUi.latencyCanDisable || !terminalUi.latencyCanEnable || !mobile.terminalBack?.visible || !mobile.terminalBack?.returned || !terminalLabels.every(label=>terminalUi.labels.includes(label)) || terminalUi.metrics.some(item=>Math.abs(item.buttonHeight-30)>0.5||Math.abs(item.iconWidth-14)>0.5||Math.abs(item.iconHeight-14)>0.5||item.centerDelta>0.5);
+  const terminalUiFailed = !terminalUi.found || !terminalUi.desktopBackHidden || terminalUi.binaryType !== 'arraybuffer' || !terminalUi.binaryWrite || !terminalUi.encodingMenuOpened || !terminalUi.fontMenuOpened || !terminalUi.statusHoverShowsFull || !terminalUi.narrowToolbarFits || !terminalUi.narrowToolbarLeftAligned || !terminalUi.responsiveToolbarFits || !terminalUi.latencyMeasured || !terminalUi.latencyCanDisable || !terminalUi.latencyCanEnable || !mobile.terminalBack?.visible || !mobile.terminalBack?.compactToolbar || !mobile.terminalBack?.returned || !mobile.terminalFontMenu?.opened || !mobile.terminalFontMenu?.withinViewport || !mobile.terminalFontMenu?.compact || !mobile.terminalFontMenu?.scrollable || !mobile.terminalFontMenu?.closeSticky || !mobile.terminalFontMenu?.touchTargets || !terminalLabels.every(label=>terminalUi.labels.includes(label)) || terminalUi.metrics.some(item=>Math.abs(item.buttonHeight-30)>0.5||Math.abs(item.iconWidth-14)>0.5||Math.abs(item.iconHeight-14)>0.5||item.centerDelta>0.5);
   const logSettingsUiFailed = !logSettingsUi.open || !logSettingsUi.accessible || !logSettingsUi.days || !logSettingsUi.fileMb || !logSettingsUi.totalMb || !logSettingsUi.rotations || !logSettingsUi.cleanup || !logSettingsUi.save || !logSettingsUi.closed;
   const expectedDirectoryActions = ['收藏','新建目录','新建文件','上传','回收站'];
   const directoryActionsUi = sftpUi.directoryActionsUi || {};
@@ -1403,8 +1726,8 @@ app.whenReady().then(async () => {
   const textEncodingUi = sftpUi.textEncodingUi || {};
   const jobUiFailed = !jobUi.found || !jobUi.mainHasRunning || !jobUi.mainHasFailed || !jobUi.mainHidesDone || !jobUi.historyEnabled || jobUi.historyCount !== '2' || !jobUi.historyHasDone || !jobUi.historyHidesCurrent || !jobUi.noManualRefresh || !jobUi.compactRow;
   const textEncodingUiFailed = !textEncodingUi.opened || textEncodingUi.selected !== 'gbk' || !textEncodingUi.persistDefault || !textEncodingUi.backup || !['utf8','utf8bom','gb18030','gbk','big5','shift_jis','euc-kr','latin1'].every(value=>textEncodingUi.options?.includes(value));
-  const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || textEncodingUiFailed || !directorySizeUi.idleButton || !directorySizeUi.requestedOnce || !directorySizeUi.exactBytes || !directorySizeUi.formatted || !directorySizeUi.refreshable || !directoryCacheBehavior.sameResponseUntouched || !directoryCacheBehavior.changedResponseRendered || !directoryCacheBehavior.boundedAndExpired || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || !directoryActionsUi.reusedWithSilentRefresh || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !directoryActionsUi.crossHostCopyEnabled || !directoryActionsUi.crossHostMoveDisabled || !directoryActionsUi.filenameEncodingMenu || !directoryActionsUi.terminalJump || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
-  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || logSettingsUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton || !result.stickyGroupHeaders || !result.stickyGroupHeaderSealsTop || !result.operationPaneCollapsible || !result.compactDesktopHeader || !result.forwardToggleFits ? 1 : 0;
+  const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || textEncodingUiFailed || !directorySizeUi.idleButton || !directorySizeUi.requestedOnce || !directorySizeUi.exactBytes || !directorySizeUi.formatted || !directorySizeUi.refreshable || !directoryCacheBehavior.sameResponseUntouched || !directoryCacheBehavior.changedResponseRendered || !directoryCacheBehavior.boundedAndExpired || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || !directoryActionsUi.reusedWithSilentRefresh || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !directoryActionsUi.crossHostCopyEnabled || !directoryActionsUi.crossHostMoveDisabled || !directoryActionsUi.filenameEncodingMenu || !directoryActionsUi.emptyFavoritesCompact || !directoryActionsUi.wideDirectoryBarCompact || !directoryActionsUi.narrowDirectoryBarCompact || !directoryActionsUi.terminalJump || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
+  const code = errors.length || overflow || darkFailed || menuFailed || refreshStateUiFailed || workspaceTabDragUiFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || logSettingsUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton || !result.stickyGroupHeaders || !result.stickyGroupHeaderSealsTop || !result.operationPaneCollapsible || !result.compactDesktopHeader || !result.forwardToggleFits ? 1 : 0;
   clearTimeout(smokeWatchdog);
   window.destroy();
   process.exit(code);

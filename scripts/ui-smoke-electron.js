@@ -77,12 +77,22 @@ app.whenReady().then(async () => {
     const groupActionButton = document.querySelector('.connection-group-menu-button');
     const groupHeadRow = document.querySelector('.connection-group-head-row');
     const groupHeadStyle = groupHeadRow ? getComputedStyle(groupHeadRow) : null;
+    const connectionTree = document.querySelector('#connectionGroups');
+    const connectionTreeRect = connectionTree?.getBoundingClientRect();
+    const groupHeadRect = groupHeadRow?.getBoundingClientRect();
     const stickyGroupHeaders = Boolean(
       groupHeadStyle
       && groupHeadStyle.position === 'sticky'
       && parseFloat(groupHeadStyle.top) === 0
       && groupHeadStyle.backgroundColor !== 'rgba(0, 0, 0, 0)'
       && groupHeadStyle.boxShadow !== 'none'
+    );
+    const stickyGroupHeaderSealsTop = Boolean(
+      connectionTree
+      && connectionTreeRect
+      && groupHeadRect
+      && parseFloat(getComputedStyle(connectionTree).paddingTop) === 0
+      && Math.abs(groupHeadRect.top - connectionTreeRect.top) <= 0.5
     );
     const forwardToggle = document.querySelector('.conn-actions .connection-forward-toggle');
     const forwardToggleRect = forwardToggle?.getBoundingClientRect();
@@ -132,6 +142,7 @@ app.whenReady().then(async () => {
       groupRenameMenu: groupMenuLabels.includes('重命名分组'),
       groupActionButton: Boolean(groupActionButton && groupActionButton.getAttribute('aria-label')?.includes('分组操作')),
       stickyGroupHeaders,
+      stickyGroupHeaderSealsTop,
       operationPaneCollapsible: expandedBrand && collapsedBrand && paneExpanded && paneCollapsed && differentActivityExpands && activeActivityCollapses && collapsedContentWidth >= expandedContentWidth + 250,
       activityUtilities: document.querySelector('.activity-bottom')?.children[0]?.id === 'themeToggle'
         && document.querySelector('.activity-bottom')?.children[1]?.id === 'activityRefresh'
@@ -1393,7 +1404,7 @@ app.whenReady().then(async () => {
   const jobUiFailed = !jobUi.found || !jobUi.mainHasRunning || !jobUi.mainHasFailed || !jobUi.mainHidesDone || !jobUi.historyEnabled || jobUi.historyCount !== '2' || !jobUi.historyHasDone || !jobUi.historyHidesCurrent || !jobUi.noManualRefresh || !jobUi.compactRow;
   const textEncodingUiFailed = !textEncodingUi.opened || textEncodingUi.selected !== 'gbk' || !textEncodingUi.persistDefault || !textEncodingUi.backup || !['utf8','utf8bom','gb18030','gbk','big5','shift_jis','euc-kr','latin1'].every(value=>textEncodingUi.options?.includes(value));
   const sftpUiFailed = Boolean(sftpUi.error) || jobUiFailed || textEncodingUiFailed || !directorySizeUi.idleButton || !directorySizeUi.requestedOnce || !directorySizeUi.exactBytes || !directorySizeUi.formatted || !directorySizeUi.refreshable || !directoryCacheBehavior.sameResponseUntouched || !directoryCacheBehavior.changedResponseRendered || !directoryCacheBehavior.boundedAndExpired || !directoryActionsUi.found || directoryActionsUi.stickyPosition !== 'sticky' || !directoryActionsUi.barInsideSticky || !directoryActionsUi.barAfterBreadcrumb || !directoryActionsUi.reusedWithSilentRefresh || JSON.stringify(directoryActionsUi.actionLabels) !== JSON.stringify(expectedDirectoryActions) || !directoryActionsUi.emptyClipboardHidden || !directoryActionsUi.copyQueueVisible || !directoryActionsUi.copyCancelled || !directoryActionsUi.moveQueueVisible || !directoryActionsUi.moveCancelled || !directoryActionsUi.crossHostCopyEnabled || !directoryActionsUi.crossHostMoveDisabled || !directoryActionsUi.filenameEncodingMenu || !directoryActionsUi.terminalJump || !sftpUi.folderOpened || !sftpUi.fileOpened || !sftpUi.unknownAction || sftpUi.stickyPosition !== "sticky" || !sftpUi.breadcrumbScrollable || !sftpUi.singlePathPresentation || sftpUi.breadcrumbLabels?.join('/') !== '根目录/Users/junruo/Public' || sftpUi.breadcrumbText.includes('//') || !sftpUi.selectionShown || !sftpUi.selectionActionsShown || !sftpUi.specialSelectionExact || sftpUi.selectedRows !== 2 || !sftpUi.selectionCleared || !sftpUi.fileHasCompression || !sftpUi.fileHasPermissions || !sftpUi.permissionOwnerColumn || !sftpUi.permissionOwnerTitle || !sftpUi.wideColumnAlignment || !sftpUi.wideActionsFit || !sftpUi.compactSizeVisible || !sftpUi.compactTimeVisible || !sftpUi.compactAccessVisible || !sftpUi.compactMediumHidden || !sftpUi.compactCoreVisible || !sftpUi.compactNoOverflow || !sftpUi.permissionModeSync || !sftpUi.recursiveVisible || sftpUi.compactRowHeight > 48 || !sftpUi.moreMenuOpened || !sftpUi.contextMenuOpened || !sftpUi.narrowLayoutClass || !sftpUi.narrowCoreHidden || !sftpUi.narrowMoreVisible || !sftpUi.narrowMetaVisible || !sftpUi.narrowAccessHidden || !sftpUi.completedMutationDetected || sftpUi.pageRows !== 50 || !sftpUi.pagerVisible || !sftpUi.pagerText.includes('第 1/2 页') || !sftpUi.previousDisabled || !sftpUi.nextEnabled;
-  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || logSettingsUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton || !result.stickyGroupHeaders || !result.operationPaneCollapsible || !result.compactDesktopHeader || !result.forwardToggleFits ? 1 : 0;
+  const code = errors.length || overflow || darkFailed || menuFailed || runningActionsFailed || authUiFailed || saveAndClearUiFailed || notificationUiFailed || restoreKeyUiFailed || restoreCredentialUiFailed || activityUiFailed || navigationUiFailed || aboutUiFailed || mobileNavigationFailed || mobileAboutFailed || terminalUiFailed || logSettingsUiFailed || sftpUiFailed || !clipboardUi.ok || mobile.contentVisible === "none" || !result.groups || !result.icons || !result.groupRenameMenu || !result.groupActionButton || !result.stickyGroupHeaders || !result.stickyGroupHeaderSealsTop || !result.operationPaneCollapsible || !result.compactDesktopHeader || !result.forwardToggleFits ? 1 : 0;
   clearTimeout(smokeWatchdog);
   window.destroy();
   process.exit(code);

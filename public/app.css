@@ -65,7 +65,7 @@ th { color:var(--muted); font-size:12px; font-weight:600; }
 .explorer-tools button { display:inline-flex; align-items:center; justify-content:center; gap:5px; }
 .explorer-tools button svg { width:14px; height:14px; }
 .tool-row { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
-.tree { overflow:auto; padding:8px 0 18px; flex:1; }
+.tree { overflow:auto; padding:0 0 18px; flex:1; }
 @media (min-width:761px) {
   .app.operation-pane-collapsed { grid-template-columns:46px minmax(0,1fr); }
   .app.operation-pane-collapsed .sidebar { display:none; }

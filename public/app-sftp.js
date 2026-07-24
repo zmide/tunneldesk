@@ -3,6 +3,11 @@ let sftpListResizeFrame = 0;
 const sftpKnownJobStatuses = new Map();
 const sftpPendingDirectoryRefreshes = new Set();
 const SFTP_MUTATING_JOB_TYPES = new Set(["upload", "copy", "cross-copy", "move", "extract", "compress"]);
+const SFTP_DIRECTORY_VIEW_CACHE_TTL_MS = 10 * 60 * 1000;
+const SFTP_DIRECTORY_VIEW_CACHE_MAX_DIRECTORIES = 60;
+const SFTP_DIRECTORY_VIEW_CACHE_MAX_ENTRIES = 5000;
+const SFTP_DIRECTORY_SIZE_CACHE_TTL_MS = 10 * 60 * 1000;
+const SFTP_DIRECTORY_SIZE_CACHE_MAX_ENTRIES = 200;
 const sftpFilenameEncodingOptions = [
   ["utf8", "UTF-8"],
   ["gb18030", "GB18030"],
@@ -31,6 +36,235 @@ function parentRemotePath(path) {
   const index = clean.lastIndexOf("/");
   if (index === 0 && clean.startsWith("/")) return "/";
   return index < 0 ? "." : clean.slice(0, index);
+}
+
+function normalizeSftpDirectoryCachePath(value) {
+  const path = String(value || ".").replace(/\\/g, "/");
+  if (path === "/") return "/";
+  return path.replace(/\/+$/, "") || ".";
+}
+
+function sftpDirectoryViewCacheKey(connectionId, remotePath) {
+  return `${Number(connectionId)}\0${normalizeSftpDirectoryCachePath(remotePath)}`;
+}
+
+function resolvedSftpDirectoryViewCacheKey(connectionId, remotePath) {
+  const requested = sftpDirectoryViewCacheKey(connectionId, remotePath);
+  return sftpDirectoryViewAliases.get(requested) || requested;
+}
+
+function removeSftpDirectoryViewCacheEntry(key) {
+  sftpDirectoryViewCache.delete(key);
+  for (const [alias, target] of sftpDirectoryViewAliases) {
+    if (alias === key || target === key) sftpDirectoryViewAliases.delete(alias);
+  }
+}
+
+function pruneSftpDirectoryViewCache(now=Date.now()) {
+  for (const [key, cached] of sftpDirectoryViewCache) {
+    if (now - Number(cached.lastAccess || cached.cachedAt || 0) > SFTP_DIRECTORY_VIEW_CACHE_TTL_MS) {
+      removeSftpDirectoryViewCacheEntry(key);
+    }
+  }
+  let totalEntries = [...sftpDirectoryViewCache.values()]
+    .reduce((sum, cached) => sum + Number(cached.state?.entries?.length || 0), 0);
+  while (
+    sftpDirectoryViewCache.size > SFTP_DIRECTORY_VIEW_CACHE_MAX_DIRECTORIES
+    || totalEntries > SFTP_DIRECTORY_VIEW_CACHE_MAX_ENTRIES
+  ) {
+    const oldestKey = sftpDirectoryViewCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    totalEntries -= Number(sftpDirectoryViewCache.get(oldestKey)?.state?.entries?.length || 0);
+    removeSftpDirectoryViewCacheEntry(oldestKey);
+  }
+}
+
+function cloneSftpDirectoryViewState(state) {
+  return {
+    ...state,
+    entries:(state?.entries || []).map(entry => ({...entry})),
+    selected:state?.selected ? {...state.selected} : null,
+    loading:false
+  };
+}
+
+function cloneSftpScrollState(state) {
+  if (!state) return null;
+  return {...state, selectedPaths:[...(state.selectedPaths || [])]};
+}
+
+function getCachedSftpDirectoryView(connectionId, remotePath) {
+  pruneSftpDirectoryViewCache();
+  const key = resolvedSftpDirectoryViewCacheKey(connectionId, remotePath);
+  const cached = sftpDirectoryViewCache.get(key);
+  if (!cached) return null;
+  cached.lastAccess = Date.now();
+  sftpDirectoryViewCache.delete(key);
+  sftpDirectoryViewCache.set(key, cached);
+  return cached;
+}
+
+function cacheSftpDirectoryView(tabKey=activeTabKey, requestedPath=sftpState.path, viewState=captureSftpViewState()) {
+  if (!String(tabKey || "").startsWith("sftp-") || !Number(sftpState.connectionId)) return null;
+  const now = Date.now();
+  const state = cloneSftpDirectoryViewState(sftpState);
+  const canonicalKey = sftpDirectoryViewCacheKey(state.connectionId, state.path);
+  const requestedKey = sftpDirectoryViewCacheKey(state.connectionId, requestedPath);
+  removeSftpDirectoryViewCacheEntry(canonicalKey);
+  const cached = {
+    needsReload:Boolean(sftpState.loading),
+    state,
+    viewState:cloneSftpScrollState(viewState),
+    cachedAt:now,
+    lastAccess:now
+  };
+  sftpDirectoryViewCache.set(canonicalKey, cached);
+  sftpDirectoryViewAliases.set(canonicalKey, canonicalKey);
+  sftpDirectoryViewAliases.set(requestedKey, canonicalKey);
+  pruneSftpDirectoryViewCache(now);
+  return cached;
+}
+
+function clearSftpDirectoryViewCache(tabKey) {
+  const connectionId = Number(String(tabKey || "").replace(/^sftp-/, ""));
+  if (!connectionId) return;
+  const prefix = `${connectionId}\0`;
+  for (const key of [...sftpDirectoryViewCache.keys()]) {
+    if (key.startsWith(prefix)) removeSftpDirectoryViewCacheEntry(key);
+  }
+  for (const key of [...sftpDirectoryViewAliases.keys()]) {
+    if (key.startsWith(prefix)) sftpDirectoryViewAliases.delete(key);
+  }
+  clearSftpDirectorySizeCache(connectionId);
+}
+
+function sftpDirectorySizeCacheKey(connectionId, remotePath) {
+  return `${Number(connectionId)}\0${normalizeSftpDirectoryCachePath(remotePath)}`;
+}
+
+function pruneSftpDirectorySizeCache(now=Date.now()) {
+  for (const [key, record] of sftpDirectorySizeCache) {
+    if (record.status !== "loading" && now - Number(record.lastAccess || record.updatedAt || 0) > SFTP_DIRECTORY_SIZE_CACHE_TTL_MS) {
+      sftpDirectorySizeCache.delete(key);
+    }
+  }
+  while (sftpDirectorySizeCache.size > SFTP_DIRECTORY_SIZE_CACHE_MAX_ENTRIES) {
+    const oldestKey = sftpDirectorySizeCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    sftpDirectorySizeCache.delete(oldestKey);
+  }
+}
+
+function getSftpDirectorySizeRecord(connectionId, remotePath) {
+  pruneSftpDirectorySizeCache();
+  const key = sftpDirectorySizeCacheKey(connectionId, remotePath);
+  const record = sftpDirectorySizeCache.get(key);
+  if (!record) return null;
+  record.lastAccess = Date.now();
+  sftpDirectorySizeCache.delete(key);
+  sftpDirectorySizeCache.set(key, record);
+  return record;
+}
+
+function setSftpDirectorySizeRecord(connectionId, remotePath, record) {
+  const key = sftpDirectorySizeCacheKey(connectionId, remotePath);
+  const now = Date.now();
+  sftpDirectorySizeCache.delete(key);
+  sftpDirectorySizeCache.set(key, {...record, updatedAt:now, lastAccess:now});
+  pruneSftpDirectorySizeCache(now);
+}
+
+function clearSftpDirectorySizeCache(connectionId) {
+  const prefix = `${Number(connectionId)}\0`;
+  for (const key of [...sftpDirectorySizeCache.keys()]) {
+    if (key.startsWith(prefix)) sftpDirectorySizeCache.delete(key);
+  }
+}
+
+function sftpDirectorySizePresentation(record) {
+  if (record?.status === "loading") return {
+    className:"is-loading",
+    label:"读取中",
+    title:"正在递归读取目录实际大小",
+    disabled:true,
+    iconName:"loader-circle"
+  };
+  if (record?.status === "ready") {
+    const exactBytes = String(record.sizeBytes || "0");
+    return {
+      className:"is-ready",
+      label:formatBytes(Number(exactBytes)),
+      title:`实际内容大小 ${exactBytes} 字节；点击重新读取`,
+      disabled:false,
+      iconName:"refresh-cw"
+    };
+  }
+  if (record?.status === "error") return {
+    className:"is-error",
+    label:"重试",
+    title:`读取失败：${record.error || "未知错误"}；点击重试`,
+    disabled:false,
+    iconName:"circle-alert"
+  };
+  return {
+    className:"is-idle",
+    label:"读取",
+    title:"递归读取目录内普通文件的实际总字节数",
+    disabled:false,
+    iconName:"calculator"
+  };
+}
+
+function sftpDirectorySizeButtonHtml(connectionId, remotePath) {
+  const key = encodeURIComponent(sftpDirectorySizeCacheKey(connectionId, remotePath));
+  const presentation = sftpDirectorySizePresentation(getSftpDirectorySizeRecord(connectionId, remotePath));
+  return `<button class="sftp-directory-size-button ${presentation.className}" data-sftp-directory-size="${escAttr(key)}" type="button" title="${escAttr(presentation.title)}" aria-label="${escAttr(presentation.title)}" ${presentation.disabled ? "disabled" : ""} onclick="event.stopPropagation();readSftpDirectorySize(${Number(connectionId)},'${escAttr(remotePath)}')">${icon(presentation.iconName)}<span>${esc(presentation.label)}</span></button>`;
+}
+
+function syncSftpDirectorySizeButtons(connectionId, remotePath) {
+  const key = encodeURIComponent(sftpDirectorySizeCacheKey(connectionId, remotePath));
+  document.querySelectorAll(".sftp-directory-size-button").forEach(button => {
+    if (button.dataset.sftpDirectorySize !== key) return;
+    button.outerHTML = sftpDirectorySizeButtonHtml(connectionId, remotePath);
+  });
+}
+
+async function readSftpDirectorySize(connectionId, remotePath) {
+  const current = getSftpDirectorySizeRecord(connectionId, remotePath);
+  if (current?.status === "loading") return;
+  setSftpDirectorySizeRecord(connectionId, remotePath, {status:"loading"});
+  syncSftpDirectorySizeButtons(connectionId, remotePath);
+  try {
+    const result = await api(`/api/connections/${connectionId}/sftp/directory-size`, {
+      method:"POST",
+      body:JSON.stringify({path:remotePath})
+    });
+    const sizeBytes = String(result?.size_bytes ?? result?.size ?? "");
+    if (!/^\d+$/.test(sizeBytes)) throw new Error("目录大小返回格式无效");
+    setSftpDirectorySizeRecord(connectionId, remotePath, {status:"ready", sizeBytes});
+  } catch (error) {
+    setSftpDirectorySizeRecord(connectionId, remotePath, {status:"error", error:error.message || "目录大小读取失败"});
+    notify(error.message || "目录大小读取失败", "error");
+  }
+  syncSftpDirectorySizeButtons(connectionId, remotePath);
+}
+
+function sftpDirectoryContentSignature(state) {
+  return JSON.stringify({
+    path:normalizeSftpDirectoryCachePath(state?.path),
+    query:String(state?.query || ""),
+    sort:String(state?.sort || "name"),
+    dir:String(state?.dir || "asc"),
+    page:Number(state?.page || 1),
+    pageSize:Number(state?.pageSize || state?.page_size || 50),
+    total:Number(state?.total || 0),
+    totalPages:Number(state?.totalPages || state?.total_pages || 1),
+    unfilteredTotal:Number(state?.unfilteredTotal || state?.unfiltered_total || 0),
+    entries:(state?.entries || []).map(entry => [
+      entry.name, entry.type, Number(entry.size || 0), Number(entry.mtime || 0),
+      entry.mode || "", entry.owner || "", entry.group || ""
+    ])
+  });
 }
 
 function sftpBreadcrumbHtml(id, remotePath) {
@@ -106,8 +340,8 @@ async function applySftpFilenameEncoding(connectionId, encoding, label) {
 }
 
 function refreshSftpDirectoryActions() {
-  const tab = tabs.find(item => item.key === activeTabKey);
-  if (!tab) return;
+  const tab = tabs.find(item => item.key === activeTabKey) || {id:Number(sftpState.connectionId || 0)};
+  if (!tab.id) return;
   const favoriteButton = $("sftpFavoriteToggle");
   if (favoriteButton) favoriteButton.innerHTML = `${icon("star")}<span>${isCurrentSftpFavorite(tab.id, sftpState.path || ".") ? "取消收藏" : "收藏"}</span>`;
   const favorites = $("sftpFavorites");
@@ -141,16 +375,92 @@ async function toggleSftpFavorite() {
   refreshSftpDirectoryActions();
 }
 
+function rememberSftpViewState(tabKey=activeTabKey, requestedPath=sftpState.path) {
+  if (!String(tabKey || "").startsWith("sftp-")) return;
+  const view = $("view-sftp");
+  if (!view?.querySelector(".sftp-shell") || view.dataset.sftpTabKey !== tabKey) return;
+  const viewState = captureSftpViewState();
+  cacheSftpDirectoryView(tabKey, requestedPath, viewState);
+  sftpViewStates.set(tabKey, {
+    needsReload:Boolean(sftpState.loading),
+    state:{
+      ...sftpState,
+      entries:[...(sftpState.entries || [])],
+      selected:sftpState.selected ? {...sftpState.selected} : null,
+      loading:false
+    },
+    viewState
+  });
+}
+
+function restoreCachedSftpState(cached) {
+  if (!cached?.state) return false;
+  const nextRequestSeq = Math.max(Number(sftpState.requestSeq || 0), Number(cached.state.requestSeq || 0)) + 1;
+  sftpState = {
+    ...cached.state,
+    entries:[...(cached.state.entries || [])],
+    selected:cached.state.selected ? {...cached.state.selected} : null,
+    loading:false,
+    requestSeq:nextRequestSeq
+  };
+  return true;
+}
+
 async function openSftp(id, remotePath=".", updateTab=true) {
+  const tabKey = `sftp-${id}`;
+  const view = $("view-sftp");
+  const currentlyMounted = view.dataset.sftpTabKey === activeTabKey && Boolean(view.querySelector(".sftp-shell"));
+  const leavingCurrentDirectory = activeView === "sftp"
+    && currentlyMounted
+    && (
+      activeTabKey !== tabKey
+      || resolvedSftpDirectoryViewCacheKey(sftpState.connectionId, sftpState.path)
+        !== resolvedSftpDirectoryViewCacheKey(id, remotePath)
+    );
+  if (leavingCurrentDirectory) rememberSftpViewState(activeTabKey);
   const c = selectConnection(id);
   if (!c) return;
   clearTimeout(sftpSearchTimer);
-  sftpState = {...sftpState, connectionId:id, path:remotePath, entries:[], selected:null, page:1, total:0, totalPages:1, unfilteredTotal:0};
-  $("view-sftp").innerHTML = `<div class="sftp-shell">
+  const directoryCached = getCachedSftpDirectoryView(id, remotePath);
+  const tabCached = updateTab ? null : sftpViewStates.get(tabKey);
+  const cached = directoryCached || tabCached;
+  const mounted = view.dataset.sftpTabKey === tabKey
+    && Boolean(view.querySelector(".sftp-shell"))
+    && Number(sftpState.connectionId) === Number(id)
+    && (
+      normalizeSftpDirectoryCachePath(sftpState.path) === normalizeSftpDirectoryCachePath(remotePath)
+      || normalizeSftpDirectoryCachePath(directoryCached?.state?.path) === normalizeSftpDirectoryCachePath(sftpState.path)
+    );
+  if (mounted) {
+    setWorkspace(`${c.name} · SFTP`, `${c.ssh_user}@${c.ssh_host}`, "sftp", tabKey, updateTab, true, {kind:"sftp", id:c.id, path:sftpState.path});
+    if (cached?.viewState) restoreSftpViewState(cached.viewState);
+    refreshSftpDirectoryActions();
+    refreshSftpJobs();
+    startSftpJobsTimer();
+    void loadSftpPage({
+      path:sftpState.path,
+      page:sftpState.page || 1,
+      tabKey,
+      refresh:true,
+      keepContents:true,
+      preserveView:true,
+      silent:true,
+      renderIfChangedOnly:true
+    });
+    return true;
+  }
+
+  const restored = Boolean(cached?.state && String(cached.state.path || ".") === String(remotePath || "."))
+    && restoreCachedSftpState(cached);
+  if (!restored) {
+    sftpState = {...sftpState, connectionId:id, path:remotePath, entries:[], selected:null, page:1, total:0, totalPages:1, unfilteredTotal:0};
+  }
+  const displayPath = restored ? sftpState.path : remotePath;
+  view.innerHTML = `<div class="sftp-shell">
     <div class="sftp-top">
       <div class="sftp-path-block">
         <div class="sftp-title">${esc(c.name)}</div>
-        <nav class="sftp-breadcrumb" id="sftpBreadcrumb" aria-label="远程目录路径">${sftpBreadcrumbHtml(id, remotePath)}</nav>
+        <nav class="sftp-breadcrumb" id="sftpBreadcrumb" aria-label="远程目录路径">${sftpBreadcrumbHtml(id, displayPath)}</nav>
       </div>
       <div class="sftp-top-actions">
         <div class="sftp-search search-field">${icon("search")}<input id="sftpSearch" placeholder="搜索当前目录" value="${esc(sftpState.query)}" oninput="setSftpSearch(this.value)"></div>
@@ -161,7 +471,7 @@ async function openSftp(id, remotePath=".", updateTab=true) {
       </div>
       <div class="sftp-directory-bar">
         <div class="sftp-directory-actions">
-          <button id="sftpFavoriteToggle" onclick="toggleSftpFavorite()">${icon("star")}<span>${isCurrentSftpFavorite(id, remotePath) ? "取消收藏" : "收藏"}</span></button>
+          <button id="sftpFavoriteToggle" onclick="toggleSftpFavorite()">${icon("star")}<span>${isCurrentSftpFavorite(id, displayPath) ? "取消收藏" : "收藏"}</span></button>
           <button onclick="mkdirSftp()">${icon("folder-plus")}<span>新建目录</span></button>
           <button onclick="createSftpFile()">${icon("file-plus-2")}<span>新建文件</span></button>
           <label class="upload-button">${icon("upload")}<span>上传</span><input id="sftpUpload" type="file" onchange="uploadSftpFile()" hidden></label>
@@ -184,12 +494,29 @@ async function openSftp(id, remotePath=".", updateTab=true) {
       </div>
     </div>
     <div id="sftpJobs" class="sftp-jobs"></div>
-    <div id="sftpList" class="sftp-list">${stateView("loading", "正在读取目录", remotePath)}</div>
+    <div id="sftpList" class="sftp-list">${restored ? "" : stateView("loading", "正在读取目录", displayPath)}</div>
   </div>`;
-  setWorkspace(`${c.name} · SFTP`, `${c.ssh_user}@${c.ssh_host}`, "sftp", `sftp-${c.id}`, updateTab, true, {kind:"sftp", id:c.id, path:remotePath});
+  view.dataset.sftpTabKey = tabKey;
+  setWorkspace(`${c.name} · SFTP`, `${c.ssh_user}@${c.ssh_host}`, "sftp", tabKey, updateTab, true, {kind:"sftp", id:c.id, path:displayPath});
   refreshSftpJobs();
   startSftpJobsTimer();
-  return loadSftpPage({path:remotePath, page:1, tabKey:`sftp-${c.id}`});
+  if (restored) {
+    refreshSftpDirectoryActions();
+    renderSftpEntries();
+    restoreSftpViewState(cached.viewState);
+    void loadSftpPage({
+      path:displayPath,
+      page:sftpState.page || 1,
+      tabKey,
+      refresh:true,
+      keepContents:true,
+      preserveView:true,
+      silent:true,
+      renderIfChangedOnly:true
+    });
+    return true;
+  }
+  return loadSftpPage({path:remotePath, page:1, tabKey});
 }
 
 async function loadSftpPage(options={}) {
@@ -206,6 +533,7 @@ async function loadSftpPage(options={}) {
   const sameDirectory = Number(sftpState.connectionId) === id && String(sftpState.path || ".") === String(remotePath || ".");
   const keepContents = Boolean(list?.querySelector(".sftp-head") && sameDirectory && options.keepContents !== false);
   const preserveView = Boolean(options.preserveView ?? options.refresh) && keepContents;
+  const silent = Boolean(options.silent) && keepContents;
 
   if (sftpRequestController) sftpRequestController.abort();
   const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -213,9 +541,11 @@ async function loadSftpPage(options={}) {
   const requestSeq = Number(sftpState.requestSeq || 0) + 1;
   sftpState = {...sftpState, loading:true, requestSeq, selected:preserveView ? sftpState.selected : null};
   if (list) {
-    list.classList.toggle("is-refreshing", keepContents);
-    list.setAttribute("aria-busy", "true");
-    if (!keepContents) list.innerHTML = stateView("loading", "正在读取目录", remotePath);
+    if (!silent) {
+      list.classList.toggle("is-refreshing", keepContents);
+      list.setAttribute("aria-busy", "true");
+      if (!keepContents) list.innerHTML = stateView("loading", "正在读取目录", remotePath);
+    }
   }
 
   const params = new URLSearchParams({
@@ -233,7 +563,7 @@ async function loadSftpPage(options={}) {
     const viewState = preserveView ? captureSftpViewState() : null;
     const tab = tabs.find(item => item.key === tabKey);
     if (tab) tab.path = data.path;
-    sftpState = {
+    const nextState = {
       ...sftpState,
       connectionId:id,
       path:data.path,
@@ -247,23 +577,32 @@ async function loadSftpPage(options={}) {
       loading:false,
       requestSeq
     };
-    if ($("sftpBreadcrumb")) $("sftpBreadcrumb").innerHTML = sftpBreadcrumbHtml(id, data.path);
-    refreshSftpDirectoryActions();
-    renderSftpEntries();
-    if (viewState) restoreSftpViewState(viewState);
+    const contentChanged = !options.renderIfChangedOnly
+      || sftpDirectoryContentSignature(sftpState) !== sftpDirectoryContentSignature(nextState);
+    sftpState = nextState;
+    if (contentChanged) {
+      if ($("sftpBreadcrumb")) $("sftpBreadcrumb").innerHTML = sftpBreadcrumbHtml(id, data.path);
+      refreshSftpDirectoryActions();
+      renderSftpEntries();
+      if (viewState) restoreSftpViewState(viewState);
+    }
+    rememberSftpViewState(tabKey, remotePath);
     saveTabsState();
     return true;
   } catch (error) {
     if (error?.name === "AbortError" || requestSeq !== sftpState.requestSeq) return false;
     if (activeTabKey === tabKey && activeView === "sftp" && $("sftpList")) {
-      if (keepContents) notify(error.message || "目录同步失败", "error");
-      else $("sftpList").innerHTML = stateView("error", "目录加载失败", error.message, `<button onclick="refreshSftp()">重试</button>`);
+      if (keepContents) {
+        if (!silent) notify(error.message || "目录同步失败", "error");
+      } else {
+        $("sftpList").innerHTML = stateView("error", "目录加载失败", error.message, `<button onclick="refreshSftp()">重试</button>`);
+      }
     }
     return false;
   } finally {
     if (requestSeq === sftpState.requestSeq) sftpState.loading = false;
     if (sftpRequestController === controller) sftpRequestController = null;
-    if (list && requestSeq === sftpState.requestSeq) {
+    if (list && requestSeq === sftpState.requestSeq && !silent) {
       list.classList.remove("is-refreshing");
       list.setAttribute("aria-busy", "false");
     }
@@ -374,7 +713,7 @@ function renderSftpEntries() {
     return `<div class="sftp-row ${active ? "active" : ""}" onclick="selectSftpEntry(${id}, '${escAttr(fullPath)}', '${escAttr(entry.name)}', '${escAttr(entry.type)}')" ondblclick="activateSftpEntry(event, ${id}, '${escAttr(fullPath)}', '${escAttr(entry.name)}', '${escAttr(entry.type)}')" oncontextmenu="showSftpEntryMenu(event, ${id}, '${escAttr(fullPath)}', '${escAttr(entry.name)}', '${escAttr(entry.type)}')">
       <input class="sftp-check" type="checkbox" value="${esc(fullPath)}" data-name="${esc(entry.name)}" data-type="${esc(entry.type)}" data-mode="${esc(entry.mode || "")}" data-owner="${esc(entry.owner || "")}" data-group="${esc(entry.group || "")}" aria-label="选择 ${esc(entry.name)}" onclick="event.stopPropagation()" onchange="updateSftpSelection()">
       <button class="sftp-name" title="${esc(entry.name)}" onclick="event.stopPropagation(); selectSftpEntry(${id}, '${escAttr(fullPath)}', '${escAttr(entry.name)}', '${escAttr(entry.type)}')"><span class="sftp-icon ${entry.type} ${sftpFileKind(entry.name)}">${sftpIcon(entry.name, isDir)}</span><span class="sftp-name-copy"><span class="sftp-file-name">${esc(entry.name)}</span><span class="sftp-mobile-meta">${isDir ? "目录" : formatBytes(entry.size)} · ${entry.mtime ? formatSftpTime(entry.mtime) : "--"}</span></span></button>
-      <span class="sftp-size">${isDir ? "--" : formatBytes(entry.size)}</span>
+      <span class="sftp-size">${isDir ? sftpDirectorySizeButtonHtml(id, fullPath) : formatBytes(entry.size)}</span>
       <span class="sftp-time">${entry.mtime ? formatSftpTime(entry.mtime) : "--"}</span>
       <span class="sftp-access" title="权限 ${esc(entry.mode || "未知")}；所有者 ${esc(entry.owner || "未知")}；用户组 ${esc(entry.group || "未知")}"><code>${esc(entry.mode || "---")}</code><span>${esc(entry.owner || "未知")}</span></span>
       <div class="sftp-row-actions">${sftpRowActionsHtml(id, fullPath, entry.name, entry.type)}</div>

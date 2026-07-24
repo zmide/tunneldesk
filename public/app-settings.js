@@ -583,6 +583,11 @@ function renderSettings() {
           ${storageSettingsPanelHtml()}
           ${desktopBehaviorPanelHtml()}
           <section>
+            <h3>终端显示</h3>
+            <label class="check-row"><input id="terminalLatencyVisible" type="checkbox" ${terminalLatencyVisible ? "checked" : ""} onchange="setTerminalLatencyVisible(this.checked)"> 显示终端交互响应延迟</label>
+            <div class="muted">默认开启。延迟从实际按键发送开始，到远端终端首次返回数据为止；不会额外发送探测命令，也不会触发 Tab 补全。此选项保存在当前设备。</div>
+          </section>
+          <section>
             <h3>SFTP 回收站</h3>
             <label class="check-row"><input id="sftpRecycleBinEnabled" type="checkbox" ${runtimeSettings?.saved?.sftp_recycle_bin_enabled ? "checked" : ""}> 删除远程文件时先移入回收站</label>
             <div class="muted">默认关闭。开启后，每台远端服务器会在当前 SSH 用户主目录创建 TunnelDesk 专用隐藏目录；关闭只影响之后的删除，不会自动清空已有内容。</div>

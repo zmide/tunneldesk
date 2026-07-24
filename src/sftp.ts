@@ -244,6 +244,38 @@ async function listRemoteDir(connectionId, remotePath = ".", options: any = {}) 
   };
 }
 
+function buildRemoteDirectorySizeCommand(remotePath, connection = null, token = "") {
+  const pathValue = String(remotePath || "").replace(/\\/g, "/");
+  if (!pathValue || pathValue.includes("\0") || pathValue.length > 4096) throw new Error("远程目录路径无效或过长");
+  const safeToken = /^[a-f0-9]{8,64}$/i.test(String(token || ""))
+    ? String(token)
+    : randomBytes(12).toString("hex");
+  return [
+    `TD_TARGET=${remotePathOperand(connection, pathValue)}`,
+    `TD_SIZE_FILE="\${TMPDIR:-/tmp}/.tunneldesk-size-${safeToken}"`,
+    `trap 'rm -f "$TD_SIZE_FILE"' 0 1 2 3 15`,
+    `if [ ! -d "$TD_TARGET" ]; then printf '%s\\n' '目标不是目录或已不存在' >&2; exit 1; fi`,
+    `if stat -c '%s' "$TD_TARGET" >/dev/null 2>&1; then TD_STAT_STYLE=gnu; elif stat -f '%z' "$TD_TARGET" >/dev/null 2>&1; then TD_STAT_STYLE=bsd; else printf '%s\\n' '远程系统缺少兼容的 stat 命令' >&2; exit 1; fi`,
+    `if [ "$TD_STAT_STYLE" = gnu ]; then if ! find "$TD_TARGET" -type f -exec stat -c '%s' {} + > "$TD_SIZE_FILE"; then printf '%s\\n' '目录存在无法读取的内容，未返回不完整大小' >&2; exit 1; fi; else if ! find "$TD_TARGET" -type f -exec stat -f '%z' {} + > "$TD_SIZE_FILE"; then printf '%s\\n' '目录存在无法读取的内容，未返回不完整大小' >&2; exit 1; fi; fi`,
+    `awk 'BEGIN { total=0 } { if ($1 !~ /^[0-9]+$/) exit 2; total += $1 } END { if (NR == 0) print "0"; else printf "%.0f\\n", total }' "$TD_SIZE_FILE"`
+  ].join("; ");
+}
+
+async function readRemoteDirectorySize(connectionId, remotePath) {
+  const connection = getConnection(connectionId);
+  const command = buildRemoteDirectorySizeCommand(remotePath, connection);
+  const output = (await runRemote(connection, command, null, 5 * 60 * 1000)).toString("utf8").trim();
+  const sizeBytes = output.split(/\r?\n/).filter(Boolean).pop() || "";
+  if (!/^\d+$/.test(sizeBytes)) throw new Error("远程目录大小返回格式无效");
+  const exactSize = BigInt(sizeBytes);
+  return {
+    path:String(remotePath || ""),
+    size:exactSize <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(exactSize) : null,
+    size_bytes:exactSize.toString(),
+    method:"recursive-file-bytes"
+  };
+}
+
 async function makeRemoteDir(connectionId, remotePath) {
   const connection = getConnection(connectionId);
   await runRemote(connection, `mkdir -p ${remotePathOperand(connection, remotePath)}`);
@@ -581,6 +613,8 @@ async function writeRemoteFile(connectionId, remotePath, data, options: { backup
 
 module.exports = {
   listRemoteDir,
+  buildRemoteDirectorySizeCommand,
+  readRemoteDirectorySize,
   normalizeRemoteDirectoryListOptions,
   paginateRemoteEntries,
   invalidateRemoteDirectoryCache,

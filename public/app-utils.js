@@ -100,11 +100,12 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("theme", theme);
   const text = theme === "dark" ? "切换为亮色" : "切换为暗色";
-  document.querySelectorAll("#themeToggle").forEach(btn => {
+  document.querySelectorAll(".theme-toggle").forEach(btn => {
     btn.title = text;
     btn.setAttribute("aria-label", text);
     btn.innerHTML = icon(theme === "dark" ? "sun" : "moon");
   });
+  window.tunnelDeskDesktop?.setTheme?.(theme);
 }
 
 function toggleTheme() {

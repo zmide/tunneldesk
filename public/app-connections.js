@@ -20,7 +20,7 @@ function connectionHasRunningForwards(c){ return (c.forwards||[]).some(f=>f.stat
 function connectionToggleButton(c){
   const action=connectionHasRunningForwards(c)?"stop":"start";
   const text=action==="start"?"启用转发":"停止转发";
-  return `<button onclick="connectionForwardAction(${c.id},'${action}',this)">${icon(action === "start" ? "play" : "square")}<span>${text}</span></button>`;
+  return `<button class="connection-forward-toggle" title="${text}" onclick="connectionForwardAction(${c.id},'${action}',this)">${icon(action === "start" ? "play" : "square")}<span>${text}</span></button>`;
 }
 
 function showConnectionMenu(event, id) {

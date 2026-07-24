@@ -92,11 +92,41 @@ export function resolveLogFile(logDir: string, relativePath: string): string {
   return resolved;
 }
 
+function renderTerminalControls(text: string): string {
+  const lines: string[][] = [[]];
+  let cursor = 0;
+  for (const character of text) {
+    const line = lines[lines.length - 1];
+    if (character === "\r") {
+      cursor = 0;
+      continue;
+    }
+    if (character === "\n") {
+      lines.push([]);
+      cursor = 0;
+      continue;
+    }
+    if (character === "\b" || character === "\x7f") {
+      cursor = Math.max(0, cursor - 1);
+      continue;
+    }
+    if (character === "\t") {
+      const next = cursor + (8 - (cursor % 8));
+      while (line.length < next) line.push(" ");
+      cursor = next;
+      continue;
+    }
+    if (character < " " || character === "\x7f") continue;
+    while (line.length < cursor) line.push(" ");
+    line[cursor] = character;
+    cursor += 1;
+  }
+  return lines.map(line => line.join("").trimEnd()).join("\n");
+}
+
 function stripAnsi(text: string): string {
-  return text
-    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[PX^_][\s\S]*?\x1B\\)/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
+  const withoutAnsi = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[PX^_][\s\S]*?\x1B\\)/g, "");
+  return renderTerminalControls(withoutAnsi);
 }
 
 async function searchLog(

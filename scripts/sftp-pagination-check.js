@@ -11,6 +11,7 @@ const {
   buildRecycleRemotePathCommand,
   buildRestoreRemoteRecycleCommand,
   buildRemoteCreateFileCommand,
+  buildRemoteDirectorySizeCommand,
   buildRemotePermissionCommand,
   invalidateRemoteDirectoryCache,
   normalizeRemotePermissionRequest,
@@ -140,6 +141,17 @@ assert.throws(() => buildRemoteCreateFileCommand(".."), /新建文件路径无�
 assert.throws(() => buildRemoteCreateFileCommand("../outside.txt"), /新建文件路径无效/);
 assert.throws(() => buildRemoteCreateFileCommand("folder/../../outside.txt"), /新建文件路径无效/);
 assert.throws(() => buildRemoteCreateFileCommand("folder/"), /文件名不能以斜杠结尾/);
+
+const directorySizeCommand = buildRemoteDirectorySizeCommand("/srv/a b/o'k", null, "0123456789abcdef");
+assert.match(directorySizeCommand, /TD_TARGET='\/srv\/a b\/o'\\''k'/, "目录大小路径必须经过 shell 安全引用");
+assert.match(directorySizeCommand, /stat -c '%s'/, "Linux 和 BusyBox 应使用 GNU stat 字节数");
+assert.match(directorySizeCommand, /stat -f '%z'/, "macOS 和 BSD 应使用 BSD stat 字节数");
+assert.match(directorySizeCommand, /find "\$TD_TARGET" -type f/, "目录大小必须递归统计普通文件");
+assert.match(directorySizeCommand, /目录存在无法读取的内容，未返回不完整大小/, "权限或遍历失败时不能返回不完整的估算值");
+assert.match(directorySizeCommand, /\.tunneldesk-size-0123456789abcdef/, "临时统计文件名应可预测且会由 trap 清理");
+assert.doesNotMatch(directorySizeCommand, /\bdu\b/, "目录大小应汇总精确文件字节数，不能使用按块取整的 du");
+assert.throws(() => buildRemoteDirectorySizeCommand(""), /远程目录路径无效/);
+assert.throws(() => buildRemoteDirectorySizeCommand("bad\0path"), /远程目录路径无效/);
 
 const recycleId = "m1abcd23-0123456789abcdef";
 const recycleDeletedAt = 1784567890123;

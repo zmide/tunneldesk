@@ -13,20 +13,26 @@
   <div class="app">
     <div class="left-pane">
       <div class="brand">
-        <h1>TunnelDesk</h1>
-        <div class="side-actions"><button id="themeToggle" class="icon-button" onclick="toggleTheme()" title="切换主题" aria-label="切换主题"><i data-lucide="moon"></i></button><button class="icon-button" onclick="loadAll()" title="刷新数据" aria-label="刷新数据"><i data-lucide="refresh-cw"></i></button></div>
+        <h1 aria-label="TunnelDesk"><span class="brand-name-full" aria-hidden="true">TunnelDesk</span><span class="brand-name-short" aria-hidden="true">TD</span></h1>
+        <div class="side-actions">
+          <button id="operationPaneCollapse" class="operation-pane-collapse icon-button" type="button" onclick="setOperationPaneCollapsed(true)" title="收起操作区" aria-label="收起操作区"><i data-lucide="panel-left-close"></i></button>
+          <button class="mobile-brand-action theme-toggle icon-button" onclick="toggleTheme()" title="切换主题" aria-label="切换主题"><i data-lucide="moon"></i></button>
+          <button class="mobile-brand-action icon-button" onclick="loadAll()" title="刷新数据" aria-label="刷新数据"><i data-lucide="refresh-cw"></i></button>
+        </div>
       </div>
       <div class="left-body">
         <nav class="activity" aria-label="主导航">
           <div class="activity-top">
-            <button id="navConnections" class="active" onclick="showPrimary('connections')" title="连接列表" aria-label="连接列表"><i data-lucide="server"></i></button>
-            <button id="navRunning" onclick="showPrimary('running')" title="正在转发" aria-label="正在转发"><i data-lucide="route"></i></button>
-            <button id="navCommand" onclick="showPrimary('command')" title="批量命令" aria-label="批量命令"><i data-lucide="square-terminal"></i></button>
-            <button id="navImport" onclick="showPrimary('import')" title="导入导出" aria-label="导入导出"><i data-lucide="arrow-left-right"></i></button>
-            <button id="navLogs" onclick="showPrimary('logs')" title="日志" aria-label="日志"><i data-lucide="scroll-text"></i></button>
-            <button id="navSettings" onclick="showPrimary('settings')" title="设置" aria-label="设置"><i data-lucide="settings"></i><span id="navSettingsUpdateDot" class="nav-update-dot" hidden aria-label="发现新版本"></span></button>
+            <button id="navConnections" class="active" onclick="showPrimary('connections', true)" title="连接列表" aria-label="连接列表"><i data-lucide="server"></i></button>
+            <button id="navRunning" onclick="showPrimary('running', true)" title="正在转发" aria-label="正在转发"><i data-lucide="route"></i></button>
+            <button id="navCommand" onclick="showPrimary('command', true)" title="批量命令" aria-label="批量命令"><i data-lucide="square-terminal"></i></button>
+            <button id="navImport" onclick="showPrimary('import', true)" title="导入导出" aria-label="导入导出"><i data-lucide="arrow-left-right"></i></button>
+            <button id="navLogs" onclick="showPrimary('logs', true)" title="日志" aria-label="日志"><i data-lucide="scroll-text"></i></button>
+            <button id="navSettings" onclick="showPrimary('settings', true)" title="设置" aria-label="设置"><i data-lucide="settings"></i><span id="navSettingsUpdateDot" class="nav-update-dot" hidden aria-label="发现新版本"></span></button>
           </div>
           <div class="activity-bottom">
+            <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" title="切换主题" aria-label="切换主题"><i data-lucide="moon"></i></button>
+            <button id="activityRefresh" type="button" onclick="loadAll()" title="刷新数据" aria-label="刷新数据"><i data-lucide="refresh-cw"></i></button>
             <a class="github-link" href="https://github.com/zmide/tunneldesk" target="_blank" rel="noopener" title="GitHub">
               <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.2.8-.6v-2c-3.3.7-4-1.4-4-1.4-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 .1.6 2.1 3.4 1.5.1-.7.4-1.2.7-1.5-2.6-.3-5.4-1.3-5.4-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.4 5.9.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
             </a>

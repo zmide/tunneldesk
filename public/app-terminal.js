@@ -77,6 +77,88 @@ function terminalEncodingLabel(connection) {
   return terminalEncodingOptions.find(([value]) => value === (connection.terminal_encoding || "utf8"))?.[1] || "UTF-8";
 }
 
+function updateTerminalConnectionStatus(connection, key, state="") {
+  if (activeTabKey !== key) return;
+  const status = $("terminalStatus");
+  if (!status) return;
+  const text = `${connection.ssh_user}@${connection.ssh_host}:${connection.ssh_port}${state ? ` · ${state}` : ""}`;
+  status.textContent = text;
+  status.title = text;
+}
+
+function terminalLatencyTone(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return "pending";
+  if (milliseconds < 100) return "good";
+  if (milliseconds < 250) return "medium";
+  return "slow";
+}
+
+function terminalLatencyText(session) {
+  return Number.isFinite(session?.latencyMs) ? `延迟 ${session.latencyMs} ms` : "延迟 -- ms";
+}
+
+function terminalLatencyHtml(key) {
+  const session = terminalSessions.get(key);
+  const latency = Number(session?.latencyMs);
+  return `<span id="terminalLatency" class="terminal-latency ${terminalLatencyTone(latency)}" title="交互响应延迟：从按键发送到远端终端首次返回数据的时间" ${terminalLatencyVisible ? "" : "hidden"}>${esc(terminalLatencyText(session))}</span>`;
+}
+
+function updateTerminalLatencyDisplay(key) {
+  if (activeTabKey !== key) return;
+  const indicator = $("terminalLatency");
+  if (!indicator) return;
+  const session = terminalSessions.get(key);
+  const latency = Number(session?.latencyMs);
+  indicator.hidden = !terminalLatencyVisible;
+  indicator.className = `terminal-latency ${terminalLatencyTone(latency)}`;
+  indicator.textContent = terminalLatencyText(session);
+  indicator.title = Number.isFinite(latency)
+    ? `最近交互响应延迟 ${latency} ms；从按键发送到远端终端首次返回数据`
+    : "交互响应延迟：从按键发送到远端终端首次返回数据的时间";
+}
+
+function setTerminalLatencyVisible(visible) {
+  terminalLatencyVisible = Boolean(visible);
+  localStorage.setItem("terminalLatencyVisible", terminalLatencyVisible ? "1" : "0");
+  const input = $("terminalLatencyVisible");
+  if (input) input.checked = terminalLatencyVisible;
+  if (!terminalLatencyVisible) {
+    for (const session of terminalSessions.values()) {
+      session.latencyPendingAt = 0;
+      clearTimeout(session.latencyPendingTimer);
+      session.latencyPendingTimer = null;
+    }
+  }
+  updateTerminalLatencyDisplay(activeTabKey);
+}
+
+function startTerminalLatencySample(session) {
+  if (!terminalLatencyVisible || !session?.connected || session.latencyPendingAt) return;
+  const now = performance.now();
+  if (now - Number(session.latencySampledAt || 0) < 500) return;
+  session.latencyPendingAt = now;
+  clearTimeout(session.latencyPendingTimer);
+  session.latencyPendingTimer = setTimeout(() => {
+    session.latencyPendingAt = 0;
+    session.latencyPendingTimer = null;
+  }, 5000);
+}
+
+function finishTerminalLatencySample(session, key) {
+  const startedAt = Number(session?.latencyPendingAt || 0);
+  if (!startedAt) return;
+  session.latencyPendingAt = 0;
+  clearTimeout(session.latencyPendingTimer);
+  session.latencyPendingTimer = null;
+  const sample = Math.max(0, Math.round(performance.now() - startedAt));
+  if (sample > 5000) return;
+  session.latencySamples = [...(session.latencySamples || []), sample].slice(-5);
+  const ordered = [...session.latencySamples].sort((left, right) => left - right);
+  session.latencyMs = ordered[Math.floor(ordered.length / 2)];
+  session.latencySampledAt = performance.now();
+  updateTerminalLatencyDisplay(key);
+}
+
 function openTerminal(id, updateTab=true, existingKey="", existingTitle="") {
   const c = selectConnection(id);
   if (!c) return;
@@ -88,7 +170,8 @@ function openTerminal(id, updateTab=true, existingKey="", existingTitle="") {
     key = `terminal-${c.id}-${next}`;
     title = `${c.name} · 终端${next > 1 ? ` #${next}` : ""}`;
   }
-  $("view-terminal").innerHTML = `<div class="terminal-toolbar"><div class="terminal-title-row"><button class="terminal-mobile-back" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="backToExplorer()">${icon("arrow-left")}<span>返回</span></button><span class="terminal-connection-dot"></span><div class="terminal-status" id="terminalStatus">${esc(c.ssh_user)}@${esc(c.ssh_host)}:${c.ssh_port}</div></div><div class="actions terminal-actions"><button class="icon-button" title="打开此连接的 SFTP" aria-label="打开此连接的 SFTP" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="openSftp(${c.id})">${icon("folder-open")}</button><button class="icon-button" title="减小字体（Ctrl+滚轮）" aria-label="减小字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',-1)">${icon("minus")}</button><button class="icon-button" title="增大字体（Ctrl+滚轮）" aria-label="增大字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',1)">${icon("plus")}</button><button class="terminal-dropdown-button" title="切换终端编码" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showTerminalEncodingMenu(event,'${key}',${c.id})">${icon("languages")}<span>${esc(terminalEncodingLabel(c))}</span>${icon("chevron-down")}</button><button class="terminal-dropdown-button" title="切换终端字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showTerminalFontMenu(event,'${key}',${c.id})">${icon("type")}<span>字体</span>${icon("chevron-down")}</button><button title="${terminalKeysVisible ? "隐藏快捷键" : "显示快捷键"}" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="toggleTerminalKeys('${key}')">${icon("keyboard")}<span>${terminalKeysVisible ? "隐藏快捷键" : "快捷键"}</span></button><button title="最近命令" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showRecentTerminalCommands('${key}')">${icon("history")}<span>最近命令</span></button><button title="重新连接" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="reconnectTerminal(${c.id}, '${key}')">${icon("refresh-cw")}<span>重连</span></button>${connectionToggleButton(c).replace("<button ", "<button onpointerdown=\"keepTerminalKeyboardClosed(event)\" ")}</div></div>${renderTerminalKeys(key)}<div id="terminalMount" class="terminal-box"></div><div class="terminal-mobile-composer"><input id="terminalMobileInput" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入命令" onkeydown="handleMobileTerminalInput(event,'${key}')"><button class="primary icon-button" title="发送命令" onclick="sendMobileTerminalInput('${key}')">${icon("send")}</button></div>`;
+  const connectionAddress = `${c.ssh_user}@${c.ssh_host}:${c.ssh_port}`;
+  $("view-terminal").innerHTML = `<div class="terminal-toolbar"><div class="terminal-title-row"><button class="terminal-mobile-back" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="backToExplorer()">${icon("arrow-left")}<span>返回</span></button><span class="terminal-connection-dot"></span><div class="terminal-status" id="terminalStatus" title="${esc(connectionAddress)}">${esc(connectionAddress)}</div>${terminalLatencyHtml(key)}</div><div class="actions terminal-actions"><button class="icon-button" title="打开此连接的 SFTP" aria-label="打开此连接的 SFTP" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="openSftp(${c.id})">${icon("folder-open")}</button><button class="icon-button" title="减小字体（Ctrl+滚轮）" aria-label="减小字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',-1)">${icon("minus")}</button><button class="icon-button" title="增大字体（Ctrl+滚轮）" aria-label="增大字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="changeTerminalFont('${key}',1)">${icon("plus")}</button><button class="terminal-dropdown-button" title="切换终端编码" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showTerminalEncodingMenu(event,'${key}',${c.id})">${icon("languages")}<span>${esc(terminalEncodingLabel(c))}</span>${icon("chevron-down")}</button><button class="terminal-dropdown-button" title="切换终端字体" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showTerminalFontMenu(event,'${key}',${c.id})">${icon("type")}<span>字体</span>${icon("chevron-down")}</button><button title="${terminalKeysVisible ? "隐藏快捷键" : "显示快捷键"}" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="toggleTerminalKeys('${key}')">${icon("keyboard")}<span>${terminalKeysVisible ? "隐藏快捷键" : "快捷键"}</span></button><button title="最近命令" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="showRecentTerminalCommands('${key}')">${icon("history")}<span>最近命令</span></button><button title="重新连接" onpointerdown="keepTerminalKeyboardClosed(event)" onclick="reconnectTerminal(${c.id}, '${key}')">${icon("refresh-cw")}<span>重连</span></button>${connectionToggleButton(c).replace("<button ", "<button onpointerdown=\"keepTerminalKeyboardClosed(event)\" ")}</div></div>${renderTerminalKeys(key)}<div id="terminalMount" class="terminal-box"></div><div class="terminal-mobile-composer"><input id="terminalMobileInput" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入命令" onkeydown="handleMobileTerminalInput(event,'${key}')"><button class="primary icon-button" title="发送命令" onclick="sendMobileTerminalInput('${key}')">${icon("send")}</button></div>`;
   setWorkspace(title, `${c.ssh_user}@${c.ssh_host}:${c.ssh_port}`, "terminal", key, updateTab, true, {kind:"terminal", id:c.id});
   attachTerminal(c, key).catch(error => {
     const mount = $("terminalMount");
@@ -148,6 +231,10 @@ async function attachTerminal(c, key) {
     try { session.fit.fit(); } catch {}
     if (!isMobileLayout()) try { session.term.focus(); } catch {}
     if (!session.socket) connectTerminal(c, key);
+    else {
+      updateTerminalConnectionStatus(c, key, session.connected ? "已连接" : "已断开");
+      updateTerminalLatencyDisplay(key);
+    }
     scheduleTerminalFit();
   }, 0);
 }
@@ -257,6 +344,7 @@ function terminalSequence(label) {
 function sendTerminalData(key, data, options={}) {
   const session = terminalSessions.get(key);
   if (!session?.socket || session.socket.readyState !== WebSocket.OPEN) return notify("终端尚未连接", "error");
+  startTerminalLatencySample(session);
   session.socket.send(data);
   const shouldFocus = options.focus ?? !isMobileLayout();
   if (shouldFocus) try { session.term.focus(); } catch {}
@@ -524,25 +612,29 @@ function connectTerminal(c, key) {
   session.term.writeln(`连接 ${c.ssh_user}@${c.ssh_host}:${c.ssh_port} ...`);
   socket.addEventListener("open", () => {
     session.connected = true;
-    const status = $("terminalStatus");
-    if (status && activeTabKey === key) status.textContent = `${c.ssh_user}@${c.ssh_host}:${c.ssh_port} · 已连接`;
+    updateTerminalConnectionStatus(c, key, "已连接");
   });
   socket.addEventListener("message", event => {
+    finishTerminalLatencySample(session, key);
     session.term.write(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data);
     if (isMobileLayout()) scheduleTerminalFit();
   });
   socket.addEventListener("close", () => {
     session.connected = false;
+    session.latencyPendingAt = 0;
+    clearTimeout(session.latencyPendingTimer);
     session.term.writeln("\r\n[连接已关闭]");
-    const status = $("terminalStatus");
-    if (status && activeTabKey === key) status.textContent = `${c.ssh_user}@${c.ssh_host}:${c.ssh_port} · 已断开`;
+    updateTerminalConnectionStatus(c, key, "已断开");
   });
   socket.addEventListener("error", () => session.term.writeln("\r\n[WebSocket 连接失败]"));
   session.inputDisposable = session.term.onData(data => {
     const beforeCtrl = terminalCtrlArmed || terminalCtrlLocked;
     const outgoing = transformTerminalInputForCtrl(key, data);
     if (!beforeCtrl) trackTerminalCommand(session, data);
-    if (socket.readyState === WebSocket.OPEN) socket.send(outgoing);
+    if (socket.readyState === WebSocket.OPEN) {
+      startTerminalLatencySample(session);
+      socket.send(outgoing);
+    }
   });
   session.resizeDisposable = session.term.onResize(size => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type:"resize", cols:size.cols, rows:size.rows}));

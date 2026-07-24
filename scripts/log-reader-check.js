@@ -41,6 +41,13 @@ async function main() {
     const older = await readLogWindow(root, "large.log", { beforeOffset: tail.offset, limitBytes: 4096 });
     assert.ok(older.end_offset <= tail.offset);
 
+    const terminalLog = path.join(root, "terminal.log");
+    const erased = "\b \b".repeat("192.168.31.7".length);
+    fs.writeFileSync(terminalLog, `host% ping 192.168.31.7${erased}210.10.1.7\r\nPING OK\r\n`, "utf8");
+    const terminalView = await readLogWindow(root, "terminal.log");
+    assert.match(terminalView.text, /host% ping 210\.10\.1\.7\nPING OK/);
+    assert.doesNotMatch(terminalView.text, /192\.168\.31\.7|\x08/);
+
     fs.writeFileSync(log, Buffer.alloc(1024 * 1024, 1));
     assert.equal(rotateLogFile(log, 1, settings), true);
     assert.equal(fs.existsSync(`${log}.1`), true);
@@ -65,7 +72,7 @@ async function main() {
       .reduce((sum, name) => sum + fs.statSync(path.join(root, name)).size, 0);
     assert.equal(capacity.deleted >= 1, true);
     assert.equal(total <= 10 * 1024 * 1024, true);
-    console.log("日志服务检查通过：分段读取、流式搜索、轮转、保留期和容量清理");
+    console.log("日志服务检查通过：分段读取、终端退格还原、流式搜索、轮转、保留期和容量清理");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

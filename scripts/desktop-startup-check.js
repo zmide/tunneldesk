@@ -220,6 +220,15 @@ check("Manual Windows launch remains visible even when login startup is configur
   assert.equal(window.hideCount, 0);
 });
 
+check("Desktop window uses the isolated native-theme bridge", () => {
+  const { api, state } = createHarness();
+  api.createWindow();
+  const window = state.windows[0];
+  assert.equal(window.options.webPreferences.contextIsolation, true);
+  assert.equal(window.options.webPreferences.nodeIntegration, false);
+  assert.equal(window.options.webPreferences.preload, path.join(root, "desktop", "preload.js"));
+});
+
 check("Explicit Windows login launch starts in the tray", () => {
   const argv = ["TunnelDesk.exe", "--start-in-tray"];
   const { api, state } = createHarness({ argv });

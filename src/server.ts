@@ -84,7 +84,7 @@ const { getPart } = require("./multipart");
 const { parseConfigText, batchTest, saveImported, exportConfig } = require("./importer");
 const { handleTerminalUpgrade, closeAllTerminals } = require("./terminal");
 const { deleteCommandTemplate, handleBatchCommandUpgrade, listCommandTemplates, saveCommandTemplate, updateCommandTemplate } = require("./commands");
-const { clearRemoteRecycleItems, copyRemotePaths, createRemoteFile, deleteRemotePath, deleteRemoteRecycleItem, encodeRemoteText, extractRemoteArchive, invalidateRemoteDirectoryCache, listRemoteDir, listRemoteRecycleItems, makeRemoteDir, moveRemotePaths, normalizeRemotePermissionRequest, readRemoteTextFile, recycleRemotePath, renameRemotePath, restoreRemoteRecycleItem, setRemotePermissions, writeRemoteFile, streamRemoteFile } = require("./sftp");
+const { clearRemoteRecycleItems, copyRemotePaths, createRemoteFile, deleteRemotePath, deleteRemoteRecycleItem, encodeRemoteText, extractRemoteArchive, invalidateRemoteDirectoryCache, listRemoteDir, listRemoteRecycleItems, makeRemoteDir, moveRemotePaths, normalizeRemotePermissionRequest, readRemoteDirectorySize, readRemoteTextFile, recycleRemotePath, renameRemotePath, restoreRemoteRecycleItem, setRemotePermissions, writeRemoteFile, streamRemoteFile } = require("./sftp");
 const { cancelSftpJob, clearFinishedSftpJobs, compressJob, copyJob, crossCopyJob, deleteSftpJob, extractJob, getSftpJobFile, listSftpJobs, moveJob, pauseSftpJob, resumeSftpJob, startDownloadJob, startUploadJob } = require("./sftp-jobs");
 const {
   appendSystemLog,
@@ -1118,6 +1118,9 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, result, 202);
     }
     const data = await readJson(req);
+    if (req.method === "POST" && parts[4] === "directory-size") {
+      return send(res, 200, await readRemoteDirectorySize(connectionId, data.path), { "Cache-Control":"no-store" });
+    }
     if (req.method === "POST" && parts[4] === "trash" && parts[5] === "restore") {
       const result = await restoreRemoteRecycleItem(connectionId, data.id);
       invalidateRemoteDirectoryCache(connectionId);

@@ -29,6 +29,9 @@ function renderTabContent(tab) {
 function activateTab(key) {
   const tab = tabs.find(item => item.key === key);
   if (!tab) return;
+  if (activeView === "sftp" && activeTabKey !== key && typeof rememberSftpViewState === "function") {
+    rememberSftpViewState(activeTabKey);
+  }
   activeTabKey = key;
   renderTabs();
   renderTabContent(tab);
@@ -45,6 +48,8 @@ function closeTabsByKey(keys, anchorKey="") {
   const anchorIndex = Math.max(0, previousTabs.findIndex(tab => tab.key === anchorKey));
   for (const key of targets) {
     closeTerminalSession(key);
+    sftpViewStates.delete(key);
+    if (typeof clearSftpDirectoryViewCache === "function") clearSftpDirectoryViewCache(key);
     if (key === "command") stopBatchCommand();
   }
   tabs = tabs.filter(tab => !targets.has(tab.key));
@@ -138,10 +143,14 @@ function closeTerminalSession(key) {
   try { session.socket?.close(); } catch {}
   try { session.resizeDisposable?.dispose(); } catch {}
   try { session.term?.dispose(); } catch {}
+  clearTimeout(session.latencyPendingTimer);
   terminalSessions.delete(key);
 }
 
 function setWorkspace(title, subtitle, viewName, key=viewName, updateTab=true, closable=true, meta={}) {
+  if (activeView === "sftp" && activeTabKey !== key && typeof rememberSftpViewState === "function") {
+    rememberSftpViewState(activeTabKey);
+  }
   if (updateTab) addTab(key, title, subtitle, viewName, closable, meta);
   $("workspaceTitle").textContent = "工作区";
   $("workspaceSubtitle").textContent = subtitle || "";
@@ -154,7 +163,11 @@ function setWorkspace(title, subtitle, viewName, key=viewName, updateTab=true, c
   if (isMobileLayout() && viewName !== "welcome") showMobileWorkspace();
 }
 
-function showPrimary(name) {
+function showPrimary(name, togglePane=false) {
+  const shouldTogglePane = togglePane && !isMobileLayout();
+  const nextPaneCollapsed = shouldTogglePane
+    ? (name === primaryView ? !operationPaneCollapsed : false)
+    : operationPaneCollapsed;
   primaryView = name;
   $("navConnections").classList.toggle("active", name === "connections");
   $("navImport").classList.toggle("active", name === "import");
@@ -170,6 +183,7 @@ function showPrimary(name) {
   $("mobileCommand").classList.toggle("active", name === "command");
   $("mobileLogs").classList.toggle("active", name === "logs");
   $("mobileSettings")?.classList.toggle("active", name === "settings");
+  if (shouldTogglePane) setOperationPaneCollapsed(nextPaneCollapsed);
   renderExplorerTools();
   if (name === "import") {
     if (isMobileLayout()) showMobileExplorer();
@@ -202,9 +216,26 @@ function setExplorerSectionActive(sectionId) {
   });
 }
 
+function syncOperationPaneState() {
+  const collapsed = operationPaneCollapsed && !isMobileLayout();
+  document.querySelector(".app")?.classList.toggle("operation-pane-collapsed", collapsed);
+  document.querySelectorAll(".activity-top > button").forEach(button => {
+    if (button.classList.contains("active")) button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    else button.removeAttribute("aria-expanded");
+  });
+}
+
+function setOperationPaneCollapsed(collapsed) {
+  operationPaneCollapsed = Boolean(collapsed);
+  localStorage.setItem("operationPaneCollapsed", operationPaneCollapsed ? "1" : "0");
+  syncOperationPaneState();
+  scheduleTerminalFit();
+}
+
 function renderExplorerTools() {
   const tools = $("explorerTools");
   const tree = $("connectionGroups");
+  syncOperationPaneState();
   tools.classList.remove("log-mode", "section-mode");
   if (tree) tree.hidden = ["settings", "import"].includes(primaryView);
   if (primaryView === "logs") {
@@ -267,6 +298,7 @@ function showMobileWorkspace() {
 }
 
 function syncResponsivePane() {
+  syncOperationPaneState();
   if (!isMobileLayout()) {
     document.querySelector(".left-pane")?.classList.remove("mobile-hide");
     return;

@@ -58,7 +58,10 @@ function connectSsh(connection) {
         reject(error);
       } else resolve(client);
     };
-    const onReady = () => finish();
+    const onReady = () => {
+      try { (client as any)._sock?.setNoDelay?.(true); } catch {}
+      finish();
+    };
     const onError = (error) => {
       if (!settled) finish(error);
     };

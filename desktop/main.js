@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { app, BrowserWindow, Menu, Notification, Tray, dialog, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, nativeTheme, shell } = require("electron");
 
 let startServer = null;
 let shutdown = null;
@@ -320,9 +320,11 @@ function createWindow(options = {}) {
     title: "TunnelDesk",
     icon: iconPath(),
     show: false,
+    backgroundColor: "#f4f6f8",
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.js")
     }
   });
   if (process.platform === "win32") {
@@ -353,6 +355,28 @@ function createWindow(options = {}) {
     event.preventDefault();
     mainWindow.hide();
   });
+}
+
+function applyDesktopTheme(theme) {
+  if (theme !== "dark" && theme !== "light") return;
+  nativeTheme.themeSource = theme;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBackgroundColor(theme === "dark" ? "#1e1e1e" : "#f4f6f8");
+  }
+}
+
+function rendererBelongsToDesktop(event) {
+  try {
+    const senderUrl = event.senderFrame?.url || event.sender?.getURL?.() || "";
+    return Boolean(webUrl) && new URL(senderUrl).origin === new URL(webUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+function handleDesktopTheme(event, theme) {
+  if (!rendererBelongsToDesktop(event)) return;
+  applyDesktopTheme(theme);
 }
 
 function showWindow() {
@@ -635,6 +659,7 @@ app.whenReady().then(async () => {
     return;
   }
   buildAppMenu();
+  ipcMain.on("tunneldesk:set-theme", handleDesktopTheme);
   createTray();
   createWindow({ openDesktopSettings:firstRun });
   if (pendingStorageMigrationNotice) setTimeout(() => notify(pendingStorageMigrationNotice), 1200);

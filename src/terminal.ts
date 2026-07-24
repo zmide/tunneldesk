@@ -24,7 +24,7 @@ const TERMINAL_ENCODINGS = new Set(["utf8", "gb18030", "gbk", "big5", "shift_jis
 function setSessionEncoding(session, value) {
   const encoding = String(value || "utf8").toLowerCase();
   if (!TERMINAL_ENCODINGS.has(encoding)) throw new Error("不支持的终端编码");
-  try { session.outputDecoder?.end(); } catch {}
+  flushSessionOutputDecoder(session);
   session.terminalEncoding = encoding;
   session.outputDecoder = encoding === "utf8" ? null : iconv.getDecoder(encoding);
 }
@@ -69,6 +69,7 @@ function handleTerminalUpgrade(req, socket) {
       "",
       ""
     ].join("\r\n"));
+    socket.setNoDelay?.(true);
     upgraded = true;
 
     const cols = Number(url.searchParams.get("cols") || 80);
@@ -116,14 +117,28 @@ function terminalEnv() {
   return env;
 }
 
-function sendTerminalOutput(session, data) {
+function emitTerminalOutput(session, data, opcode = 1) {
   appendTerminalLog(session.logFile, data);
+  sendWebSocketFrame(session.socket, data, opcode);
+}
+
+function flushSessionOutputDecoder(session) {
+  const decoder = session.outputDecoder;
+  session.outputDecoder = null;
+  if (!decoder) return;
+  try {
+    const trailing = decoder.end();
+    if (trailing) emitTerminalOutput(session, trailing, 1);
+  } catch {}
+}
+
+function sendTerminalOutput(session, data) {
   if (Buffer.isBuffer(data) && session.outputDecoder) {
     const decoded = session.outputDecoder.write(data);
-    if (decoded) sendWebSocketFrame(session.socket, decoded, 1);
+    if (decoded) emitTerminalOutput(session, decoded, 1);
     return;
   }
-  sendWebSocketFrame(session.socket, data, Buffer.isBuffer(data) ? 2 : 1);
+  emitTerminalOutput(session, data, Buffer.isBuffer(data) ? 2 : 1);
 }
 
 function startPlainTerminal(session, connection, args, cwd, log) {
@@ -268,6 +283,7 @@ function writeTerminalInput(session, payload) {
 function closeTerminalSession(session) {
   if (!sessions.has(session)) return;
   sessions.delete(session);
+  flushSessionOutputDecoder(session);
   try { session.ptyProcess?.kill(); } catch {}
   try { session.child?.kill(); } catch {}
   try { session.ssh2Stream?.close(); } catch {}
